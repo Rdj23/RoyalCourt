@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { User, Trophy, Eye, EyeOff, RotateCcw, ShieldAlert, Crown, Smartphone, Users, Bot, Download, Clock } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { User, Trophy, Eye, EyeOff, RotateCcw, ShieldAlert, Crown, Smartphone, Users, Bot, Download, Clock, Video } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, updateDoc, onSnapshot, getDoc } from 'firebase/firestore';
@@ -82,6 +82,9 @@ export default function Game() {
 
   // PWA Install Prompt
   const [deferredPrompt, setDeferredPrompt] = useState(null);
+
+  // Scroll Ref
+  const handContainerRef = useRef(null);
 
   // 1. AUTHENTICATION
   useEffect(() => {
@@ -175,12 +178,20 @@ export default function Game() {
     }
 
     if (gameData.centerPile.length === 0) {
+      // LEADING
       const suitsInHand = {};
       bot.hand.forEach(c => {
           if(!suitsInHand[c.suit]) suitsInHand[c.suit] = [];
           suitsInHand[c.suit].push(c);
       });
-      const validSuits = Object.keys(suitsInHand);
+      
+      // Filter out 'AvoidSuits' (suits that caused a cut previously)
+      const avoidList = gameData.avoidSuits || [];
+      let validSuits = Object.keys(suitsInHand).filter(s => !avoidList.includes(s));
+      
+      // If no good suits left, play any
+      if (validSuits.length === 0) validSuits = Object.keys(suitsInHand);
+
       if (validSuits.length > 0) {
           const chosenSuit = validSuits[Math.floor(Math.random() * validSuits.length)];
           const cardsOfSuit = suitsInHand[chosenSuit];
@@ -190,6 +201,7 @@ export default function Game() {
           cardToPlay = bot.hand[0];
       }
     } else {
+      // FOLLOWING
       const hasSuit = bot.hand.filter(c => c.suit === gameData.leadSuit);
       if (hasSuit.length > 0) {
         cardToPlay = hasSuit[0]; 
@@ -243,6 +255,7 @@ export default function Game() {
         let updates = {};
         
         if (isDifferentSuit) {
+            // CUT LOGIC
             let highestRank = -1;
             let victimId = -1;
             tempPile.forEach(play => {
@@ -261,17 +274,23 @@ export default function Game() {
                 });
                 newPlayers[victimIdx].status = 'playing'; 
 
+                // ADD TO AVOID LIST
+                // Since this suit caused a cut, bots should avoid leading it
+                const newAvoidSuits = [...(gameData.avoidSuits || []), newLeadSuit];
+
                 updates = {
                     players: newPlayers,
                     centerPile: [],
                     leadSuit: null,
                     currentTurn: victimId,
+                    avoidSuits: newAvoidSuits,
                     gameLog: `⚔️ ${newPlayers[playerIndex].name} CUTS! ${newPlayers[victimIdx].name} picks up.`
                 };
                 playSound('cut');
             }
         } 
         else if (isTrickComplete) {
+            // CLEAR LOGIC
             let highestRank = -1;
             let winnerId = -1;
             tempPile.forEach(play => {
@@ -350,6 +369,7 @@ export default function Game() {
       currentTurn: 0,
       leadSuit: null,
       burntCards: [],
+      avoidSuits: [], // Init memory
       scores: { [playerName]: 0 },
       mandatoryCard: null,
       gameLog: "Waiting for players..."
@@ -430,6 +450,7 @@ export default function Game() {
         mandatoryCard: starterCard,
         centerPile: [],
         leadSuit: null,
+        avoidSuits: [], // Reset bot memory
         scores: finalScores,
         gameLog: `${currentPlayers[starterIndex].name} starts with ${starterCard?.val}♠️`
     });
@@ -459,25 +480,6 @@ export default function Game() {
 
   // --- RENDER ---
   if (loading) return <div className="h-screen bg-slate-900 flex items-center justify-center text-white">Loading...</div>;
-
-  // VICTORY SCREEN (EARLY EXIT)
-  const myPlayer = gameData?.players?.find(p => p.uid === user?.uid);
-  if (gameData?.gameState === 'playing' && myPlayer?.status === 'safe') {
-      return (
-          <div className="h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-6 text-center">
-              <Trophy className="w-32 h-32 text-amber-400 mb-6 animate-bounce" />
-              <h1 className="text-5xl font-serif font-bold text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-yellow-500 mb-2">YOU ARE SAFE!</h1>
-              <p className="text-slate-400 text-lg">You have emptied your hand.</p>
-              <div className="mt-8 p-4 bg-slate-800 rounded-xl border border-slate-700 animate-pulse">
-                  Waiting for other players to finish...
-              </div>
-              
-              <div className="fixed bottom-2 w-full text-center text-slate-700 text-[10px] font-sans">
-                  Royal Court © Rohan Jadhav
-              </div>
-          </div>
-      );
-  }
 
   // GAME OVER / RESTART SCREEN
   if (gameData?.gameState === 'finished') {
@@ -575,11 +577,16 @@ export default function Game() {
       return 'hidden';
   };
 
+  const amISafe = myPlayer.status === 'safe';
+
   return (
     <div className="fixed inset-0 bg-[#0f172a] flex flex-col text-slate-200 font-sans overflow-hidden select-none">
        {/* HEADER */}
        <div className="h-12 bg-slate-950/80 backdrop-blur border-b border-slate-700 flex items-center justify-between px-4 z-30">
-          <div className="flex items-center gap-2"><span className="font-mono bg-slate-800 px-2 py-1 rounded text-amber-400 text-xs tracking-widest border border-slate-600">{roomCode}</span></div>
+          <div className="flex items-center gap-2">
+              <span className="font-mono bg-slate-800 px-2 py-1 rounded text-amber-400 text-xs tracking-widest border border-slate-600">{roomCode}</span>
+              {amISafe && <span className="bg-emerald-500 text-slate-900 text-[10px] font-bold px-2 py-0.5 rounded animate-pulse">SPECTATOR MODE</span>}
+          </div>
           {gameData.players.length === 5 && <button onClick={() => setShowBurnt(!showBurnt)} className="flex items-center gap-1 bg-slate-800 px-3 py-1 rounded-full text-[10px] font-bold uppercase">{showBurnt ? <Eye size={12}/> : <EyeOff size={12}/>} Burnt</button>}
        </div>
 
@@ -618,39 +625,62 @@ export default function Game() {
            </div>
        </div>
 
-       {/* PLAYER HAND */}
-       <div className="h-40 w-full flex flex-col items-center justify-end pb-2 relative z-20">
-           <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 px-4 py-1 rounded-full ${isMyTurn ? 'bg-amber-500/20 text-amber-400 animate-pulse border border-amber-500/50' : 'bg-slate-800/50 text-slate-500'}`}>{isMyTurn ? "Your Turn" : "Wait..."}</div>
-           <div className="w-full flex justify-center overflow-visible px-4">
-               <div className="flex items-end justify-center w-full max-w-lg relative" style={{ height: '140px' }}>
-                   {myPlayer.hand.map((card, idx) => {
-                       const totalCards = myPlayer.hand.length;
-                       // Dynamic Squeezing for Mobile - Tighter values
-                       const overlap = totalCards > 10 ? -25 : (totalCards > 7 ? -20 : -10); // Mobile default
-                       
-                       // Responsive Styles
-                       const style = { marginLeft: idx === 0 ? 0 : `${overlap}px`, zIndex: idx };
-                       
-                       const isMandatory = gameData.mandatoryCard && card.id === gameData.mandatoryCard.id;
-                       const canPlay = isMyTurn && (!gameData.mandatoryCard || isMandatory) && (gameData.centerPile.length === 0 || card.suit === gameData.leadSuit || !myPlayer.hand.some(c => c.suit === gameData.leadSuit));
+       {/* PLAYER HAND - HORIZONTAL SCROLL ENABLED */}
+       {!amISafe ? (
+           <div className="h-40 w-full flex flex-col items-center justify-end pb-2 relative z-20">
+               <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 px-4 py-1 rounded-full ${isMyTurn ? 'bg-amber-500/20 text-amber-400 animate-pulse border border-amber-500/50' : 'bg-slate-800/50 text-slate-500'}`}>{isMyTurn ? "Your Turn" : "Wait..."}</div>
+               
+               {/* SCROLLABLE CONTAINER */}
+               <div 
+                   ref={handContainerRef}
+                   className="w-full flex overflow-x-auto px-4 pb-2 snap-x snap-mandatory"
+                   style={{ justifyContent: myPlayer.hand.length > 5 ? 'flex-start' : 'center' }}
+               >
+                   <div className="flex items-end h-[140px] min-w-max px-4">
+                       {myPlayer.hand.map((card, idx) => {
+                           const isMandatory = gameData.mandatoryCard && card.id === gameData.mandatoryCard.id;
+                           const canPlay = isMyTurn && (!gameData.mandatoryCard || isMandatory) && (gameData.centerPile.length === 0 || card.suit === gameData.leadSuit || !myPlayer.hand.some(c => c.suit === gameData.leadSuit));
 
-                       return (
-                           <button key={card.id} onClick={() => handleCardClick(card)} disabled={!isMyTurn} style={style} className={`w-14 h-24 sm:w-20 sm:h-32 md:w-24 md:h-36 bg-white rounded-xl shadow-2xl border relative flex flex-col items-center justify-between p-1 sm:p-2 flex-shrink-0 transition-all duration-200 origin-bottom ${canPlay ? 'hover:-translate-y-6 hover:scale-110 cursor-pointer border-slate-300 z-50' : 'border-slate-300 opacity-100'} ${isMandatory ? 'ring-4 ring-amber-500 animate-bounce' : ''}`}>
-                                <div className="w-full flex justify-between pointer-events-none"><span className={`font-bold text-sm sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
-                                <div className={`text-2xl sm:text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
-                                <div className="w-full flex justify-between rotate-180 pointer-events-none"><span className={`font-bold text-sm sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
-                           </button>
-                       )
-                   })}
+                           return (
+                               <button 
+                                   key={card.id} 
+                                   onClick={() => handleCardClick(card)} 
+                                   disabled={!isMyTurn} 
+                                   className={`
+                                       w-16 h-28 sm:w-20 sm:h-32 md:w-24 md:h-36 bg-white rounded-xl shadow-2xl border relative flex flex-col items-center justify-between p-1 sm:p-2 flex-shrink-0 transition-transform duration-200 snap-center
+                                       ${idx !== 0 ? '-ml-6 sm:-ml-8' : ''} 
+                                       ${canPlay ? 'hover:-translate-y-4 z-50' : 'z-0'}
+                                       ${isMandatory ? 'ring-4 ring-amber-500 animate-bounce' : ''}
+                                   `}
+                               >
+                                    <div className="w-full flex justify-between pointer-events-none"><span className={`font-bold text-sm sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
+                                    <div className={`text-2xl sm:text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
+                                    <div className="w-full flex justify-between rotate-180 pointer-events-none"><span className={`font-bold text-sm sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
+                               </button>
+                           )
+                       })}
+                   </div>
                </div>
            </div>
-       </div>
+       ) : (
+           <div className="h-40 w-full flex flex-col items-center justify-center pb-4 text-center text-slate-500 text-sm">
+               <Video className="w-6 h-6 mb-2 opacity-50" />
+               <p>Spectating Game...</p>
+           </div>
+       )}
 
        {/* BURNT CARDS OVERLAY */}
        {showBurnt && (
            <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-slate-900/95 p-4 rounded-xl border border-amber-500 z-50 shadow-2xl">
                <div className="text-xs text-amber-500 font-bold mb-2 uppercase text-center">Burnt Cards</div>
-               <div className="flex gap-2">{gameData.burntCards.map(c => <div key={c.id} className="w-8 h-12 bg-slate-200 rounded flex items-center justify-center text-slate-900 font-bold text-xs">{c.suit}</div>)}</div>
+               <div className="flex gap-2">
+                   {gameData.burntCards.map(c => (
+                       <div key={c.id} className="w-10 h-14 bg-white rounded-md shadow flex flex-col items-center justify-center border border-slate-300">
+                           <span className={`text-sm font-bold ${getSuitStyle(c.suit).replace('text-slate-200', 'text-slate-900')}`}>{c.display}</span>
+                           <span className={`text-lg ${getSuitStyle(c.suit).replace('text-slate-200', 'text-slate-900')}`}>{c.suit}</span>
+                       </div>
+                   ))}
+               </div>
                <button onClick={()=>setShowBurnt(false)} className="w-full mt-2 text-[10px] text-slate-400 uppercase font-bold tracking-wider">Close</button>
            </div>
        )}
