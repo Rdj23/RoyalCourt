@@ -4,7 +4,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, updateDoc, onSnapshot, getDoc } from 'firebase/firestore';
 
-// --- 🔴 PASTE YOUR FIREBASE CONFIG HERE 🔴 ---
+// --- YOUR CREDENTIALS ---
 const firebaseConfig = {
     apiKey: "AIzaSyArYds-rUs9lzhU_AaL7c8SCxPOYQGDU2g",
     authDomain: "royalcourt-c9e6e.firebaseapp.com",
@@ -12,8 +12,7 @@ const firebaseConfig = {
     storageBucket: "royalcourt-c9e6e.firebasestorage.app",
     messagingSenderId: "720774216418",
     appId: "1:720774216418:web:17491eeca417a1e9077cbb"
-  };
-// --------------------------------------------------
+};
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
@@ -75,14 +74,15 @@ export default function Game() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   
-  // Local state for Lobby
-  const [targetPlayers, setTargetPlayers] = useState(4); // 4 or 5
+  // Lobby Options
+  const [targetPlayers, setTargetPlayers] = useState(4); 
+  const [fillWithBots, setFillWithBots] = useState(true);
 
   // 1. AUTHENTICATION
   useEffect(() => {
     signInAnonymously(auth).catch(err => {
         console.error("Auth Error:", err);
-        setErrorMsg("Failed to connect to server.");
+        setErrorMsg("Failed to connect. Check internet.");
     });
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       if (u) {
@@ -115,12 +115,10 @@ export default function Game() {
   useEffect(() => {
     if (!gameData || !user) return;
     if (gameData.gameState !== 'playing') return;
-    
-    // Only the Host runs the bots to prevent conflict
-    if (gameData.hostId !== user.uid) return;
+    if (gameData.hostId !== user.uid) return; // Only host runs bots
 
     const currentPlayer = gameData.players[gameData.currentTurn];
-    if (currentPlayer && currentPlayer.isBot) {
+    if (currentPlayer && currentPlayer.isBot && currentPlayer.status === 'playing') {
         const timer = setTimeout(() => {
             runBotMove(currentPlayer);
         }, 1500);
@@ -131,6 +129,7 @@ export default function Game() {
 
   // --- BOT BRAIN ---
   const runBotMove = (bot) => {
+    if (!gameData) return;
     let cardToPlay = null;
 
     // Mandatory Check
@@ -149,26 +148,34 @@ export default function Game() {
           if(!suitsInHand[c.suit]) suitsInHand[c.suit] = [];
           suitsInHand[c.suit].push(c);
       });
-      // Filter out suits to avoid if we got burned previously (simple memory)
       const validSuits = Object.keys(suitsInHand);
-      const chosenSuit = validSuits[Math.floor(Math.random() * validSuits.length)];
-      const cardsOfSuit = suitsInHand[chosenSuit];
-      
-      // Play High to clear, or Low to safe? Randomize slightly
-      const playHigh = Math.random() > 0.3;
-      cardToPlay = playHigh ? cardsOfSuit[0] : cardsOfSuit[cardsOfSuit.length - 1];
+      if (validSuits.length > 0) {
+          const chosenSuit = validSuits[Math.floor(Math.random() * validSuits.length)];
+          const cardsOfSuit = suitsInHand[chosenSuit];
+          // Mix of aggressive and safe play
+          const playHigh = Math.random() > 0.4;
+          cardToPlay = playHigh ? cardsOfSuit[0] : cardsOfSuit[cardsOfSuit.length - 1];
+      } else {
+          // Should not happen if hand not empty
+          cardToPlay = bot.hand[0];
+      }
 
     } else {
       // FOLLOWING
       const hasSuit = bot.hand.filter(c => c.suit === gameData.leadSuit);
       if (hasSuit.length > 0) {
-        cardToPlay = hasSuit[0]; // Play highest to win/clear
+        cardToPlay = hasSuit[0]; // Play highest to clear
       } else {
         // CUTTING: Throw lowest junk
         cardToPlay = bot.hand[bot.hand.length - 1]; 
       }
     }
-    submitMove(bot.id, cardToPlay);
+    
+    if (cardToPlay) {
+        submitMove(bot.id, cardToPlay);
+    } else {
+        console.error("Bot could not find a card to play!");
+    }
   };
 
 
@@ -183,7 +190,8 @@ export default function Game() {
       roomCode: code,
       hostId: user.uid,
       gameState: 'lobby',
-      targetPlayers: 4, // Default
+      targetPlayers: 4, 
+      fillWithBots: true,
       players: [{
         uid: user.uid,
         name: playerName,
@@ -244,11 +252,10 @@ export default function Game() {
     }
   };
 
-  const toggleTargetPlayers = async (num) => {
-      // Only host can change this
+  const updateLobbySettings = async (target, bots) => {
       if(gameData.hostId !== user.uid) return;
       const gameRef = doc(db, 'games', roomCode);
-      await updateDoc(gameRef, { targetPlayers: num });
+      await updateDoc(gameRef, { targetPlayers: target, fillWithBots: bots });
   };
 
   const handleStartGame = async () => {
@@ -257,8 +264,8 @@ export default function Game() {
     let currentPlayers = [...gameData.players];
     const needed = gameData.targetPlayers;
     
-    // FILL WITH BOTS
-    if (currentPlayers.length < needed) {
+    // FILL WITH BOTS IF ENABLED
+    if (gameData.fillWithBots && currentPlayers.length < needed) {
         const botsNeeded = needed - currentPlayers.length;
         for(let i=0; i<botsNeeded; i++) {
             currentPlayers.push({
@@ -273,18 +280,24 @@ export default function Game() {
     }
 
     let deck = fisherYatesShuffle(createDeck());
-    const cardsPerPlayer = needed === 4 ? 13 : 10;
+    
+    // Cards Per Player Logic
+    const playerCount = currentPlayers.length;
+    // Standard rules: 4 players = 13 cards. 5 players = 10 cards.
+    // If we have weird numbers (like 2 or 3 humans, no bots), assume 13 cards max or until deck exhaustion.
+    let handSize = 13;
+    if (playerCount === 5) handSize = 10;
     
     // Deal Cards
     currentPlayers = currentPlayers.map(p => {
-        const hand = deck.splice(0, cardsPerPlayer).sort((a,b) => {
+        const hand = deck.splice(0, handSize).sort((a,b) => {
             if (a.suit !== b.suit) return SUIT_ORDER[a.suit] - SUIT_ORDER[b.suit];
             return b.rank - a.rank;
         });
         return { ...p, hand, status: 'playing' };
     });
 
-    const burnt = deck; 
+    const burnt = deck; // Remainder (usually 2 cards for 5 players)
 
     // First Player (Highest Spade)
     const searchOrder = [...VALUES].reverse(); 
@@ -303,10 +316,10 @@ export default function Game() {
       if (starterCard) break;
     }
 
-    // Init Scores for Bots
+    // Init Scores
     let finalScores = { ...gameData.scores };
     currentPlayers.forEach(p => {
-        if(!finalScores[p.name]) finalScores[p.name] = 0;
+        if(finalScores[p.name] === undefined) finalScores[p.name] = 0;
     });
 
     const gameRef = doc(db, 'games', roomCode);
@@ -325,14 +338,16 @@ export default function Game() {
   };
 
   const submitMove = async (playerId, card) => {
-    // Note: We use the local 'gameData' state to calculate the next state
-    // In a production app, use Firestore Transactions to prevent race conditions
     const gameRef = doc(db, 'games', roomCode);
     
+    // Clone Data
     let newPlayers = [...gameData.players];
     let newPile = [...gameData.centerPile, { playerId, card }];
     
     const playerIndex = newPlayers.findIndex(p => p.id === playerId);
+    if (playerIndex === -1) return; // Safety check
+
+    // Remove card
     newPlayers[playerIndex].hand = newPlayers[playerIndex].hand.filter(c => c.id !== card.id);
     
     let updates = {
@@ -363,21 +378,22 @@ export default function Game() {
         });
 
         const victimIdx = newPlayers.findIndex(p => p.id === victimId);
-        const pickupCards = newPile.map(p => p.card);
-        newPlayers[victimIdx].hand = [...newPlayers[victimIdx].hand, ...pickupCards].sort((a,b) => {
-            if (a.suit !== b.suit) return SUIT_ORDER[a.suit] - SUIT_ORDER[b.suit];
-            return b.rank - a.rank;
-        });
+        if (victimIdx !== -1) {
+            const pickupCards = newPile.map(p => p.card);
+            newPlayers[victimIdx].hand = [...newPlayers[victimIdx].hand, ...pickupCards].sort((a,b) => {
+                if (a.suit !== b.suit) return SUIT_ORDER[a.suit] - SUIT_ORDER[b.suit];
+                return b.rank - a.rank;
+            });
 
-        updates.players = newPlayers;
-        updates.centerPile = [];
-        updates.leadSuit = null;
-        updates.currentTurn = victimId;
-        updates.gameLog = `⚔️ ${newPlayers[playerIndex].name} CUTS! ${newPlayers[victimIdx].name} picks up.`;
-        playSound('cut');
-
-        await updateDoc(gameRef, updates);
-        return;
+            updates.players = newPlayers;
+            updates.centerPile = [];
+            updates.leadSuit = null;
+            updates.currentTurn = victimId;
+            updates.gameLog = `⚔️ ${newPlayers[playerIndex].name} CUTS! ${newPlayers[victimIdx].name} picks up.`;
+            playSound('cut');
+            await updateDoc(gameRef, updates);
+            return;
+        }
     }
 
     // --- LOGIC: CLEAR ---
@@ -391,21 +407,24 @@ export default function Game() {
             }
         });
         
+        const winnerName = newPlayers.find(p=>p.id===winnerId)?.name || 'Unknown';
         updates.centerPile = [];
         updates.leadSuit = null;
-        updates.gameLog = `✨ ${newPlayers.find(p=>p.id===winnerId).name} cleared.`;
+        updates.gameLog = `✨ ${winnerName} cleared.`;
         playSound('clear');
 
         const winnerIdx = newPlayers.findIndex(p => p.id === winnerId);
         
         // Check Safe
-        if (newPlayers[winnerIdx].hand.length === 0) {
+        if (winnerIdx !== -1 && newPlayers[winnerIdx].hand.length === 0) {
             newPlayers[winnerIdx].status = 'safe';
             updates.gameLog += ` ${newPlayers[winnerIdx].name} is SAFE!`;
             
             let nextP = (winnerIdx + 1) % newPlayers.length;
-            while (newPlayers[nextP].status === 'safe') {
+            let safetyLoop = 0;
+            while (newPlayers[nextP].status === 'safe' && safetyLoop < newPlayers.length) {
                 nextP = (nextP + 1) % newPlayers.length;
+                safetyLoop++;
             }
             updates.currentTurn = nextP;
         } else {
@@ -433,8 +452,10 @@ export default function Game() {
 
     // --- LOGIC: NEXT TURN ---
     let nextIndex = (gameData.currentTurn + 1) % newPlayers.length;
-    while (newPlayers[nextIndex].status === 'safe') {
+    let safetyLoop = 0;
+    while (newPlayers[nextIndex].status === 'safe' && safetyLoop < newPlayers.length) {
         nextIndex = (nextIndex + 1) % newPlayers.length;
+        safetyLoop++;
     }
     updates.currentTurn = nextIndex;
     
@@ -472,18 +493,26 @@ export default function Game() {
                     
                     {/* HOST CONTROLS */}
                     {gameData.hostId === user.uid && (
-                        <div className="flex justify-center gap-2 mb-6">
+                        <div className="flex flex-col gap-3 mb-6">
+                             <div className="flex justify-center gap-2">
+                                 <button 
+                                    onClick={() => updateLobbySettings(4, gameData.fillWithBots)} 
+                                    className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${gameData.targetPlayers === 4 ? 'bg-amber-500 text-black' : 'bg-slate-700 text-slate-400'}`}
+                                 >
+                                    4 Players
+                                 </button>
+                                 <button 
+                                    onClick={() => updateLobbySettings(5, gameData.fillWithBots)} 
+                                    className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${gameData.targetPlayers === 5 ? 'bg-amber-500 text-black' : 'bg-slate-700 text-slate-400'}`}
+                                 >
+                                    5 Players
+                                 </button>
+                             </div>
                              <button 
-                                onClick={() => toggleTargetPlayers(4)} 
-                                className={`px-4 py-2 rounded-lg text-sm font-bold ${gameData.targetPlayers === 4 ? 'bg-amber-500 text-black' : 'bg-slate-700 text-slate-400'}`}
+                                onClick={() => updateLobbySettings(gameData.targetPlayers, !gameData.fillWithBots)}
+                                className={`text-xs py-1 px-3 rounded-full border ${gameData.fillWithBots ? 'border-emerald-500 text-emerald-400 bg-emerald-500/10' : 'border-slate-600 text-slate-500'}`}
                              >
-                                4 Players
-                             </button>
-                             <button 
-                                onClick={() => toggleTargetPlayers(5)} 
-                                className={`px-4 py-2 rounded-lg text-sm font-bold ${gameData.targetPlayers === 5 ? 'bg-amber-500 text-black' : 'bg-slate-700 text-slate-400'}`}
-                             >
-                                5 Players
+                                {gameData.fillWithBots ? '🤖 Filling empty seats with Bots' : '👤 Humans Only (No Bots)'}
                              </button>
                         </div>
                     )}
@@ -496,12 +525,15 @@ export default function Game() {
                             </div>
                         ))}
                         {/* Ghost Players for Bots */}
-                        {Array.from({length: gameData.targetPlayers - gameData.players.length}).map((_, i) => (
+                        {gameData.fillWithBots && Array.from({length: Math.max(0, gameData.targetPlayers - gameData.players.length)}).map((_, i) => (
                              <div key={`ghost-${i}`} className="flex items-center gap-3 bg-slate-900/20 p-2 rounded border border-dashed border-slate-700/30 text-slate-500">
                                 <Bot size={16} />
                                 <span>Bot will fill this spot</span>
                              </div>
                         ))}
+                        {!gameData.fillWithBots && gameData.players.length < 2 && (
+                            <div className="text-rose-400 text-xs mt-2">Need at least 2 players to start!</div>
+                        )}
                     </div>
 
                     {gameData.hostId === user.uid ? (
@@ -560,8 +592,17 @@ export default function Game() {
 
   // GAME VIEW
   const myPlayer = gameData.players.find(p => p.uid === user.uid);
-  // Guard clause for the blank screen issue
-  if (!myPlayer) return <div className="h-screen bg-slate-900 text-white flex items-center justify-center">Syncing Player Data...</div>;
+  
+  // --- BLANK SCREEN FIX ---
+  // If myPlayer is not found yet (sync delay), show loading instead of crashing
+  if (!myPlayer) {
+      return (
+          <div className="h-screen bg-slate-900 text-white flex flex-col items-center justify-center">
+              <RotateCcw className="animate-spin mb-4 text-amber-500" />
+              <p>Entering the Court...</p>
+          </div>
+      );
+  }
   
   const isMyTurn = gameData.currentTurn === myPlayer.id;
 
@@ -596,7 +637,7 @@ export default function Game() {
                        {p.status === 'safe' ? <Crown className="text-emerald-400 w-4 h-4" /> : (p.isBot ? <Bot className="text-slate-400 w-4 h-4" /> : <User className="text-slate-400 w-4 h-4" />)}
                        {p.status === 'playing' && (
                            <div className="absolute -bottom-1 -right-1 bg-slate-950 text-white text-[9px] w-4 h-4 flex items-center justify-center rounded-full border border-slate-700 font-bold">
-                               {p.hand.length}
+                               {p.hand?.length || 0}
                            </div>
                        )}
                    </div>
@@ -624,7 +665,9 @@ export default function Game() {
                     >
                         <span className={`text-2xl ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.suit}</span>
                         <span className={`font-bold text-lg ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.display}</span>
-                        <div className="absolute bottom-1 text-[8px] text-slate-400 uppercase font-bold truncate max-w-[60px]">{gameData.players.find(p=>p.id===play.playerId).name}</div>
+                        <div className="absolute bottom-1 text-[8px] text-slate-400 uppercase font-bold truncate max-w-[60px]">
+                            {gameData.players.find(p=>p.id===play.playerId)?.name || 'Unknown'}
+                        </div>
                     </div>
                 ))}
             </div>
@@ -640,10 +683,11 @@ export default function Game() {
            <div className="h-36 w-full flex justify-center overflow-visible px-4">
                <div className="flex items-end justify-center h-full w-full max-w-2xl relative">
                    {myPlayer.hand.map((card, idx) => {
-                       // Dynamic Calculation for Overlap based on hand size
-                       // As hand grows, squeeze tighter.
+                       // Dynamic Squeeze: The more cards you have, the more they overlap
                        const totalCards = myPlayer.hand.length;
-                       const overlap = totalCards > 8 ? -40 : (totalCards > 5 ? -30 : -10);
+                       // Tighten spacing significantly if hand is large to keep it on screen
+                       const overlap = totalCards > 10 ? -45 : (totalCards > 7 ? -35 : -20);
+                       
                        const style = { marginLeft: idx === 0 ? 0 : `${overlap}px`, zIndex: idx };
                        
                        const isMandatory = gameData.mandatoryCard && card.id === gameData.mandatoryCard.id;
