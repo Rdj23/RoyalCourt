@@ -560,7 +560,11 @@ export default function Game() {
   }
 
   // MAIN GAME
+  // --- FIXED: Define myPlayer BEFORE using it ---
+  const myPlayer = gameData.players.find(p => p.uid === user.uid);
+  
   if (!myPlayer) return <div className="h-screen bg-slate-900 text-white flex flex-col items-center justify-center"><RotateCcw className="animate-spin mb-4 text-amber-500"/><p>Loading...</p></div>;
+  
   const isMyTurn = gameData.currentTurn === myPlayer.id;
   const getRelativeIndex = (theirIndex) => (theirIndex - myPlayer.id + gameData.players.length) % gameData.players.length;
   const getSeatPosition = (relIdx) => {
