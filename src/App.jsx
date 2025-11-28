@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, Trophy, Eye, EyeOff, RotateCcw, ShieldAlert, Crown, Smartphone, Users, Bot, Download, Clock, Video } from 'lucide-react';
+import { User, Trophy, Eye, EyeOff, RotateCcw, ShieldAlert, Crown, Smartphone, Users, Bot, Download, Clock, Video, Menu } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, updateDoc, onSnapshot, getDoc } from 'firebase/firestore';
@@ -76,6 +76,7 @@ export default function Game() {
   const [showBurnt, setShowBurnt] = useState(false);
   const [targetPlayers, setTargetPlayers] = useState(4); 
   const [fillWithBots, setFillWithBots] = useState(true);
+  const [isProcessing, setIsProcessing] = useState(false); // LOCK TO PREVENT DOUBLE CLICKS
   
   // Auto Restart Logic
   const [restartTimer, setRestartTimer] = useState(10);
@@ -99,7 +100,6 @@ export default function Game() {
       }
     });
     
-    // PWA Install Listener
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
       setDeferredPrompt(e);
@@ -117,11 +117,9 @@ export default function Game() {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setGameData(data);
-        
-        // Reset timer if game goes back to playing
-        if (data.gameState === 'playing') {
-            setRestartTimer(10);
-        }
+        if (data.gameState === 'playing') setRestartTimer(10);
+        // Unlock processing if turn changed
+        setIsProcessing(false);
       } else {
         setErrorMsg("Room closed.");
         setGameData(null);
@@ -138,8 +136,6 @@ export default function Game() {
           const timerId = setTimeout(() => setRestartTimer(t => t - 1), 1000);
           return () => clearTimeout(timerId);
       }
-      
-      // Trigger Next Round (Host Only)
       if (gameData?.gameState === 'finished' && restartTimer === 0 && gameData.hostId === user.uid) {
           handleStartGame();
       }
@@ -152,7 +148,6 @@ export default function Game() {
     if (gameData.hostId !== user.uid) return; 
 
     const currentPlayer = gameData.players[gameData.currentTurn];
-    
     const hasAlreadyPlayed = gameData.centerPile.some(p => p.playerId === gameData.currentTurn);
 
     if (!hasAlreadyPlayed && currentPlayer && currentPlayer.isBot && currentPlayer.status === 'playing') {
@@ -178,18 +173,14 @@ export default function Game() {
     }
 
     if (gameData.centerPile.length === 0) {
-      // LEADING
       const suitsInHand = {};
       bot.hand.forEach(c => {
           if(!suitsInHand[c.suit]) suitsInHand[c.suit] = [];
           suitsInHand[c.suit].push(c);
       });
       
-      // Filter out 'AvoidSuits' (suits that caused a cut previously)
       const avoidList = gameData.avoidSuits || [];
       let validSuits = Object.keys(suitsInHand).filter(s => !avoidList.includes(s));
-      
-      // If no good suits left, play any
       if (validSuits.length === 0) validSuits = Object.keys(suitsInHand);
 
       if (validSuits.length > 0) {
@@ -201,43 +192,36 @@ export default function Game() {
           cardToPlay = bot.hand[0];
       }
     } else {
-      // FOLLOWING
       const hasSuit = bot.hand.filter(c => c.suit === gameData.leadSuit);
-      if (hasSuit.length > 0) {
-        cardToPlay = hasSuit[0]; 
-      } else {
-        cardToPlay = bot.hand[bot.hand.length - 1]; 
-      }
+      if (hasSuit.length > 0) cardToPlay = hasSuit[0]; 
+      else cardToPlay = bot.hand[bot.hand.length - 1]; 
     }
     
-    if (cardToPlay) {
-        submitMove(bot.id, cardToPlay);
-    }
+    if (cardToPlay) submitMove(bot.id, cardToPlay);
   };
 
 
   // --- GAME ACTIONS ---
 
   const submitMove = async (playerId, card) => {
+    // Prevent double submission locally immediately
+    setIsProcessing(true);
+
     const gameRef = doc(db, 'games', roomCode);
     let newPlayers = [...gameData.players];
-    
     let tempPile = [...gameData.centerPile, { playerId, card }];
     
     const playerIndex = newPlayers.findIndex(p => p.id === playerId);
-    if (playerIndex === -1) return;
-    newPlayers[playerIndex].hand = newPlayers[playerIndex].hand.filter(c => c.id !== card.id);
+    if (playerIndex === -1) { setIsProcessing(false); return; }
     
-    if (newPlayers[playerIndex].hand.length === 0) {
-        newPlayers[playerIndex].status = 'safe';
-    }
+    newPlayers[playerIndex].hand = newPlayers[playerIndex].hand.filter(c => c.id !== card.id);
+    if (newPlayers[playerIndex].hand.length === 0) newPlayers[playerIndex].status = 'safe';
 
     let currentLeadSuit = gameData.leadSuit;
     let newLeadSuit = currentLeadSuit;
-    if (tempPile.length === 1) {
-        newLeadSuit = card.suit;
-    }
+    if (tempPile.length === 1) newLeadSuit = card.suit;
 
+    // STEP 1: Show card on table (Visual update)
     await updateDoc(gameRef, {
         players: newPlayers,
         centerPile: tempPile,
@@ -250,12 +234,12 @@ export default function Game() {
     const isTrickComplete = tempPile.length >= activeCount + (newPlayers[playerIndex].status === 'safe' ? 1 : 0);
 
     if (isDifferentSuit || isTrickComplete) {
+        // Wait for players to see the result
         await new Promise(resolve => setTimeout(resolve, 3000));
         
         let updates = {};
         
         if (isDifferentSuit) {
-            // CUT LOGIC
             let highestRank = -1;
             let victimId = -1;
             tempPile.forEach(play => {
@@ -273,9 +257,6 @@ export default function Game() {
                     return b.rank - a.rank;
                 });
                 newPlayers[victimIdx].status = 'playing'; 
-
-                // ADD TO AVOID LIST
-                // Since this suit caused a cut, bots should avoid leading it
                 const newAvoidSuits = [...(gameData.avoidSuits || []), newLeadSuit];
 
                 updates = {
@@ -290,7 +271,6 @@ export default function Game() {
             }
         } 
         else if (isTrickComplete) {
-            // CLEAR LOGIC
             let highestRank = -1;
             let winnerId = -1;
             tempPile.forEach(play => {
@@ -327,6 +307,7 @@ export default function Game() {
 
         await updateDoc(gameRef, updates);
         
+        // Game Over Check
         const remaining = newPlayers.filter(p => p.status === 'playing');
         if (remaining.length <= 1) {
             const loser = remaining[0];
@@ -343,7 +324,6 @@ export default function Game() {
         
     } else {
         await new Promise(resolve => setTimeout(resolve, 1000));
-        
         let nextIndex = (gameData.currentTurn + 1) % newPlayers.length;
         let safetyLoop = 0;
         while (newPlayers[nextIndex].status === 'safe' && safetyLoop < newPlayers.length) {
@@ -352,6 +332,7 @@ export default function Game() {
         }
         await updateDoc(gameRef, { currentTurn: nextIndex });
     }
+    // Note: setIsProcessing(false) happens via onSnapshot automatically when game state updates
   };
 
   // --- ACTIONS ---
@@ -369,7 +350,7 @@ export default function Game() {
       currentTurn: 0,
       leadSuit: null,
       burntCards: [],
-      avoidSuits: [], // Init memory
+      avoidSuits: [],
       scores: { [playerName]: 0 },
       mandatoryCard: null,
       gameLog: "Waiting for players..."
@@ -403,12 +384,10 @@ export default function Game() {
     let currentPlayers = [...gameData.players];
     const needed = gameData.targetPlayers;
     
-    // Remove existing bots if any (for clean restart)
     currentPlayers = currentPlayers.filter(p => !p.isBot);
 
     if (gameData.fillWithBots && currentPlayers.length < needed) {
-        const humanCount = currentPlayers.length;
-        for(let i=0; i<needed - humanCount; i++) {
+        for(let i=0; i<needed - currentPlayers.length; i++) {
             currentPlayers.push({ uid: `bot-${Date.now()}-${i}`, name: `Bot ${i+1}`, hand: [], status: 'playing', id: currentPlayers.length, isBot: true });
         }
     }
@@ -450,7 +429,7 @@ export default function Game() {
         mandatoryCard: starterCard,
         centerPile: [],
         leadSuit: null,
-        avoidSuits: [], // Reset bot memory
+        avoidSuits: [],
         scores: finalScores,
         gameLog: `${currentPlayers[starterIndex].name} starts with ${starterCard?.val}♠️`
     });
@@ -467,9 +446,11 @@ export default function Game() {
   };
 
   const handleCardClick = (card) => {
+    if (isProcessing) return; // CLICK LOCK
     if (!gameData || gameData.gameState !== 'playing') return;
     const myPlayer = gameData.players.find(p => p.uid === user.uid);
     if (!myPlayer || gameData.currentTurn !== myPlayer.id) return; 
+    
     if (gameData.mandatoryCard && card.id !== gameData.mandatoryCard.id) return alert(`Must play ${gameData.mandatoryCard.val}♠️!`);
     if (gameData.centerPile.length > 0 && gameData.leadSuit) {
         const hasSuit = myPlayer.hand.some(c => c.suit === gameData.leadSuit);
@@ -481,28 +462,35 @@ export default function Game() {
   // --- RENDER ---
   if (loading) return <div className="h-screen bg-slate-900 flex items-center justify-center text-white">Loading...</div>;
 
-  // GAME OVER / RESTART SCREEN
+  // VICTORY SCREEN
+  const myPlayer = gameData?.players?.find(p => p.uid === user?.uid);
+  if (gameData?.gameState === 'playing' && myPlayer?.status === 'safe') {
+      return (
+          <div className="h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-6 text-center">
+              <Trophy className="w-32 h-32 text-amber-400 mb-6 animate-bounce" />
+              <h1 className="text-5xl font-serif font-bold text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-yellow-500 mb-2">YOU ARE SAFE!</h1>
+              <p className="text-slate-400 text-lg">You have emptied your hand.</p>
+              <div className="mt-8 p-4 bg-slate-800 rounded-xl border border-slate-700 animate-pulse">
+                  Waiting for other players to finish...
+              </div>
+              <div className="fixed bottom-2 w-full text-center text-slate-700 text-[10px] font-sans">Royal Court © Rohan Jadhav</div>
+          </div>
+      );
+  }
+
+  // GAME OVER
   if (gameData?.gameState === 'finished') {
       return (
           <div className="h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-6 text-center">
               <ShieldAlert className="w-24 h-24 text-rose-500 mb-4" />
               <h2 className="text-3xl font-serif font-bold text-white mb-2">Round Complete</h2>
               <div className="text-slate-400 text-sm mb-8">{gameData.gameLog}</div>
-              
               <div className="flex items-center gap-2 mb-8 bg-slate-800 px-6 py-3 rounded-full border border-slate-700">
                   <Clock className="w-5 h-5 text-amber-400 animate-pulse" />
                   <span className="text-xl font-mono">Next round in <span className="text-amber-400 font-bold">{restartTimer}s</span></span>
               </div>
-
-              {gameData.hostId === user.uid && (
-                  <button onClick={handleStartGame} className="bg-emerald-500 text-slate-900 font-bold py-3 px-8 rounded-xl hover:scale-105 transition-transform">
-                      Start Now
-                  </button>
-              )}
-              
-              <div className="fixed bottom-2 w-full text-center text-slate-700 text-[10px] font-sans">
-                  Royal Court © Rohan Jadhav
-              </div>
+              {gameData.hostId === user.uid && <button onClick={handleStartGame} className="bg-emerald-500 text-slate-900 font-bold py-3 px-8 rounded-xl hover:scale-105 transition-transform">Start Now</button>}
+              <div className="fixed bottom-2 w-full text-center text-slate-700 text-[10px] font-sans">Royal Court © Rohan Jadhav</div>
           </div>
       );
   }
@@ -560,23 +548,20 @@ export default function Game() {
   }
 
   // MAIN GAME
-  // --- FIXED: Define myPlayer BEFORE using it ---
-  const myPlayer = gameData.players.find(p => p.uid === user.uid);
-  
   if (!myPlayer) return <div className="h-screen bg-slate-900 text-white flex flex-col items-center justify-center"><RotateCcw className="animate-spin mb-4 text-amber-500"/><p>Loading...</p></div>;
-  
   const isMyTurn = gameData.currentTurn === myPlayer.id;
   const getRelativeIndex = (theirIndex) => (theirIndex - myPlayer.id + gameData.players.length) % gameData.players.length;
   const getSeatPosition = (relIdx) => {
+      // Better Mobile Positioning (Avoids Table Overlap)
       if (gameData.players.length === 4) {
-          if (relIdx === 1) return 'left-2 top-1/2 -translate-y-1/2';
-          if (relIdx === 2) return 'top-16 left-1/2 -translate-x-1/2';
-          if (relIdx === 3) return 'right-2 top-1/2 -translate-y-1/2';
+          if (relIdx === 1) return 'left-2 top-1/2 -translate-y-full'; // Left Player
+          if (relIdx === 2) return 'top-16 left-1/2 -translate-x-1/2'; // Top Player
+          if (relIdx === 3) return 'right-2 top-1/2 -translate-y-full'; // Right Player
       } else {
-          if (relIdx === 1) return 'left-2 top-1/2 -translate-y-1/2';
-          if (relIdx === 2) return 'top-16 left-1/3 -translate-x-1/2';
-          if (relIdx === 3) return 'top-16 right-1/3 translate-x-1/2';
-          if (relIdx === 4) return 'right-2 top-1/2 -translate-y-1/2';
+          if (relIdx === 1) return 'left-2 top-1/2 -translate-y-full';
+          if (relIdx === 2) return 'top-16 left-1/4 -translate-x-1/2';
+          if (relIdx === 3) return 'top-16 right-1/4 translate-x-1/2';
+          if (relIdx === 4) return 'right-2 top-1/2 -translate-y-full';
       }
       return 'hidden';
   };
@@ -629,7 +614,7 @@ export default function Game() {
            </div>
        </div>
 
-       {/* PLAYER HAND - HORIZONTAL SCROLL ENABLED */}
+       {/* PLAYER HAND - HORIZONTAL SCROLL ENABLED (MOBILE FIX) */}
        {!amISafe ? (
            <div className="h-40 w-full flex flex-col items-center justify-end pb-2 relative z-20">
                <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 px-4 py-1 rounded-full ${isMyTurn ? 'bg-amber-500/20 text-amber-400 animate-pulse border border-amber-500/50' : 'bg-slate-800/50 text-slate-500'}`}>{isMyTurn ? "Your Turn" : "Wait..."}</div>
@@ -637,10 +622,10 @@ export default function Game() {
                {/* SCROLLABLE CONTAINER */}
                <div 
                    ref={handContainerRef}
-                   className="w-full flex overflow-x-auto px-4 pb-2 snap-x snap-mandatory"
+                   className="w-full flex overflow-x-auto px-4 pb-2 snap-x snap-mandatory scroll-smooth"
                    style={{ justifyContent: myPlayer.hand.length > 5 ? 'flex-start' : 'center' }}
                >
-                   <div className="flex items-end h-[140px] min-w-max px-4">
+                   <div className="flex items-end h-[140px] min-w-max px-4 gap-1 sm:gap-2">
                        {myPlayer.hand.map((card, idx) => {
                            const isMandatory = gameData.mandatoryCard && card.id === gameData.mandatoryCard.id;
                            const canPlay = isMyTurn && (!gameData.mandatoryCard || isMandatory) && (gameData.centerPile.length === 0 || card.suit === gameData.leadSuit || !myPlayer.hand.some(c => c.suit === gameData.leadSuit));
@@ -652,8 +637,7 @@ export default function Game() {
                                    disabled={!isMyTurn} 
                                    className={`
                                        w-16 h-28 sm:w-20 sm:h-32 md:w-24 md:h-36 bg-white rounded-xl shadow-2xl border relative flex flex-col items-center justify-between p-1 sm:p-2 flex-shrink-0 transition-transform duration-200 snap-center
-                                       ${idx !== 0 ? '-ml-6 sm:-ml-8' : ''} 
-                                       ${canPlay ? 'hover:-translate-y-4 z-50' : 'z-0'}
+                                       ${canPlay ? 'hover:-translate-y-4 z-50' : 'z-0 opacity-100'}
                                        ${isMandatory ? 'ring-4 ring-amber-500 animate-bounce' : ''}
                                    `}
                                >
