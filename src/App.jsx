@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { User, Trophy, Eye, EyeOff, RotateCcw, ShieldAlert, Crown, Smartphone, Users, Bot, Download } from 'lucide-react';
+import { User, Trophy, Eye, EyeOff, RotateCcw, ShieldAlert, Crown, Smartphone, Users, Bot, Download, Clock } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, updateDoc, onSnapshot, getDoc } from 'firebase/firestore';
@@ -40,7 +40,7 @@ const playSound = (type) => {
   
   if (text) {
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.1; // Slightly slower speech
+    u.rate = 1.1; 
     u.volume = 0.6;
     synth.speak(u);
   }
@@ -77,6 +77,9 @@ export default function Game() {
   const [targetPlayers, setTargetPlayers] = useState(4); 
   const [fillWithBots, setFillWithBots] = useState(true);
   
+  // Auto Restart Logic
+  const [restartTimer, setRestartTimer] = useState(10);
+
   // PWA Install Prompt
   const [deferredPrompt, setDeferredPrompt] = useState(null);
 
@@ -109,7 +112,13 @@ export default function Game() {
     
     const unsubscribe = onSnapshot(gameRef, (docSnap) => {
       if (docSnap.exists()) {
-        setGameData(docSnap.data());
+        const data = docSnap.data();
+        setGameData(data);
+        
+        // Reset timer if game goes back to playing
+        if (data.gameState === 'playing') {
+            setRestartTimer(10);
+        }
       } else {
         setErrorMsg("Room closed.");
         setGameData(null);
@@ -120,7 +129,20 @@ export default function Game() {
     return () => unsubscribe();
   }, [user, roomCode]);
 
-  // 3. HOST-DRIVEN BOT LOGIC
+  // 3. AUTO RESTART TIMER
+  useEffect(() => {
+      if (gameData?.gameState === 'finished' && restartTimer > 0) {
+          const timerId = setTimeout(() => setRestartTimer(t => t - 1), 1000);
+          return () => clearTimeout(timerId);
+      }
+      
+      // Trigger Next Round (Host Only)
+      if (gameData?.gameState === 'finished' && restartTimer === 0 && gameData.hostId === user.uid) {
+          handleStartGame();
+      }
+  }, [gameData?.gameState, restartTimer, user]);
+
+  // 4. HOST-DRIVEN BOT LOGIC
   useEffect(() => {
     if (!gameData || !user) return;
     if (gameData.gameState !== 'playing') return;
@@ -128,12 +150,9 @@ export default function Game() {
 
     const currentPlayer = gameData.players[gameData.currentTurn];
     
-    // FIX: Check if this player has ALREADY played in the current pile
-    // This prevents the bot from spamming moves while waiting for a Cut to resolve
     const hasAlreadyPlayed = gameData.centerPile.some(p => p.playerId === gameData.currentTurn);
 
     if (!hasAlreadyPlayed && currentPlayer && currentPlayer.isBot && currentPlayer.status === 'playing') {
-        // Slowed down bot reaction time to 2.5 seconds
         const timer = setTimeout(() => {
             runBotMove(currentPlayer);
         }, 2500);
@@ -191,27 +210,22 @@ export default function Game() {
     const gameRef = doc(db, 'games', roomCode);
     let newPlayers = [...gameData.players];
     
-    // 1. PLAY THE CARD VISUALLY FIRST (The Delay Logic)
     let tempPile = [...gameData.centerPile, { playerId, card }];
     
-    // Remove card from hand
     const playerIndex = newPlayers.findIndex(p => p.id === playerId);
     if (playerIndex === -1) return;
     newPlayers[playerIndex].hand = newPlayers[playerIndex].hand.filter(c => c.id !== card.id);
     
-    // Check Immediate Safety (Did they win?)
     if (newPlayers[playerIndex].hand.length === 0) {
         newPlayers[playerIndex].status = 'safe';
     }
 
-    // Set Lead Suit
     let currentLeadSuit = gameData.leadSuit;
     let newLeadSuit = currentLeadSuit;
     if (tempPile.length === 1) {
         newLeadSuit = card.suit;
     }
 
-    // UPDATE DB STATE 1: Show card on table
     await updateDoc(gameRef, {
         players: newPlayers,
         centerPile: tempPile,
@@ -219,23 +233,16 @@ export default function Game() {
         mandatoryCard: null
     });
 
-    // --- PAUSE FOR DRAMA ---
-    // If this move causes a CUT or a CLEAR, we wait so people see it.
-    
     const isDifferentSuit = card.suit !== newLeadSuit && newLeadSuit !== null;
     const activeCount = newPlayers.filter(p => p.status === 'playing').length;
-    // Trick complete logic accounting for safe players who might have just exited
     const isTrickComplete = tempPile.length >= activeCount + (newPlayers[playerIndex].status === 'safe' ? 1 : 0);
 
     if (isDifferentSuit || isTrickComplete) {
-        // Wait 3 seconds (Slowed down from 2s) for users to see the cut/clear
         await new Promise(resolve => setTimeout(resolve, 3000));
         
-        // NOW CALCULATE RESULT
         let updates = {};
         
         if (isDifferentSuit) {
-            // CUT LOGIC
             let highestRank = -1;
             let victimId = -1;
             tempPile.forEach(play => {
@@ -252,7 +259,7 @@ export default function Game() {
                     if (a.suit !== b.suit) return SUIT_ORDER[a.suit] - SUIT_ORDER[b.suit];
                     return b.rank - a.rank;
                 });
-                newPlayers[victimIdx].status = 'playing'; // Back in game if they were safe
+                newPlayers[victimIdx].status = 'playing'; 
 
                 updates = {
                     players: newPlayers,
@@ -265,7 +272,6 @@ export default function Game() {
             }
         } 
         else if (isTrickComplete) {
-            // CLEAR LOGIC
             let highestRank = -1;
             let winnerId = -1;
             tempPile.forEach(play => {
@@ -287,7 +293,6 @@ export default function Game() {
 
             if (newPlayers[winnerIdx].status === 'safe') {
                 updates.gameLog = `🏆 ${winnerName} IS SAFE!`;
-                // Pass lead
                 let nextP = (winnerIdx + 1) % newPlayers.length;
                 let safetyLoop = 0;
                 while (newPlayers[nextP].status === 'safe' && safetyLoop < newPlayers.length) {
@@ -301,10 +306,8 @@ export default function Game() {
             updates.players = newPlayers;
         }
 
-        // Apply Logic Updates
         await updateDoc(gameRef, updates);
         
-        // Check Game Over
         const remaining = newPlayers.filter(p => p.status === 'playing');
         if (remaining.length <= 1) {
             const loser = remaining[0];
@@ -320,8 +323,6 @@ export default function Game() {
         }
         
     } else {
-        // STANDARD NEXT TURN
-        // Small 1s delay for pacing
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         let nextIndex = (gameData.currentTurn + 1) % newPlayers.length;
@@ -334,7 +335,7 @@ export default function Game() {
     }
   };
 
-  // --- LOBBY ACTIONS ---
+  // --- ACTIONS ---
   const handleCreateRoom = async () => {
     if (!playerName.trim()) return setErrorMsg("Enter Name");
     const code = generateRoomCode();
@@ -382,11 +383,18 @@ export default function Game() {
     let currentPlayers = [...gameData.players];
     const needed = gameData.targetPlayers;
     
+    // Remove existing bots if any (for clean restart)
+    currentPlayers = currentPlayers.filter(p => !p.isBot);
+
     if (gameData.fillWithBots && currentPlayers.length < needed) {
-        for(let i=0; i<needed - currentPlayers.length; i++) {
+        const humanCount = currentPlayers.length;
+        for(let i=0; i<needed - humanCount; i++) {
             currentPlayers.push({ uid: `bot-${Date.now()}-${i}`, name: `Bot ${i+1}`, hand: [], status: 'playing', id: currentPlayers.length, isBot: true });
         }
     }
+
+    // Fix IDs
+    currentPlayers = currentPlayers.map((p, index) => ({...p, id: index}));
 
     let deck = fisherYatesShuffle(createDeck());
     let handSize = currentPlayers.length === 5 ? 10 : 13;
@@ -463,14 +471,42 @@ export default function Game() {
               <div className="mt-8 p-4 bg-slate-800 rounded-xl border border-slate-700 animate-pulse">
                   Waiting for other players to finish...
               </div>
+              
+              <div className="fixed bottom-2 w-full text-center text-slate-700 text-[10px] font-sans">
+                  Royal Court © Rohan Jadhav
+              </div>
+          </div>
+      );
+  }
+
+  // GAME OVER / RESTART SCREEN
+  if (gameData?.gameState === 'finished') {
+      return (
+          <div className="h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-6 text-center">
+              <ShieldAlert className="w-24 h-24 text-rose-500 mb-4" />
+              <h2 className="text-3xl font-serif font-bold text-white mb-2">Round Complete</h2>
+              <div className="text-slate-400 text-sm mb-8">{gameData.gameLog}</div>
+              
+              <div className="flex items-center gap-2 mb-8 bg-slate-800 px-6 py-3 rounded-full border border-slate-700">
+                  <Clock className="w-5 h-5 text-amber-400 animate-pulse" />
+                  <span className="text-xl font-mono">Next round in <span className="text-amber-400 font-bold">{restartTimer}s</span></span>
+              </div>
+
+              {gameData.hostId === user.uid && (
+                  <button onClick={handleStartGame} className="bg-emerald-500 text-slate-900 font-bold py-3 px-8 rounded-xl hover:scale-105 transition-transform">
+                      Start Now
+                  </button>
+              )}
+              
+              <div className="fixed bottom-2 w-full text-center text-slate-700 text-[10px] font-sans">
+                  Royal Court © Rohan Jadhav
+              </div>
           </div>
       );
   }
 
   // LOBBY
   if (!gameData || gameData.gameState === 'lobby') {
-     // ... (Lobby code largely same, skipping repeated heavy logic, reusing blocks below)
-     // To save space, standard Lobby UI here...
      if (gameData && roomCode) {
          return (
              <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white font-sans">
@@ -492,6 +528,7 @@ export default function Game() {
                     </div>
                     {gameData.hostId === user.uid ? <button onClick={handleStartGame} className="w-full bg-emerald-500 text-slate-900 font-bold py-4 rounded-xl">Start Game</button> : <div className="text-xs text-slate-500 animate-pulse">Waiting for host...</div>}
                  </div>
+                 <div className="fixed bottom-2 w-full text-center text-slate-700 text-[10px] font-sans">Royal Court © Rohan Jadhav</div>
              </div>
          )
      }
@@ -515,6 +552,7 @@ export default function Game() {
                     </div>
                 </div>
             </div>
+            <div className="fixed bottom-2 w-full text-center text-slate-700 text-[10px] font-sans">Royal Court © Rohan Jadhav</div>
         </div>
      );
   }
@@ -556,11 +594,11 @@ export default function Game() {
                if (p.uid === user.uid) return null;
                return (
                    <div key={p.id} className={`absolute ${getSeatPosition(getRelativeIndex(p.id))} flex flex-col items-center transition-all duration-500`}>
-                       <div className={`w-12 h-12 rounded-full flex items-center justify-center border-2 bg-slate-800 relative shadow-lg ${gameData.currentTurn === p.id ? 'border-amber-400 shadow-amber-500/50 scale-110' : 'border-slate-600 opacity-80'}`}>
-                           {p.status === 'safe' ? <Crown className="text-emerald-400 w-6 h-6"/> : (p.isBot ? <Bot className="text-slate-400 w-6 h-6"/> : <User className="text-slate-400 w-6 h-6"/>)}
-                           {p.status === 'playing' && <div className="absolute -bottom-1 -right-1 bg-slate-950 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full border border-slate-700 font-bold shadow">{p.hand?.length || 0}</div>}
+                       <div className={`w-8 h-8 sm:w-12 sm:h-12 rounded-full flex items-center justify-center border-2 bg-slate-800 relative shadow-lg ${gameData.currentTurn === p.id ? 'border-amber-400 shadow-amber-500/50 scale-110' : 'border-slate-600 opacity-80'}`}>
+                           {p.status === 'safe' ? <Crown className="text-emerald-400 w-4 h-4 sm:w-6 sm:h-6"/> : (p.isBot ? <Bot className="text-slate-400 w-4 h-4 sm:w-6 sm:h-6"/> : <User className="text-slate-400 w-4 h-4 sm:w-6 sm:h-6"/>)}
+                           {p.status === 'playing' && <div className="absolute -bottom-1 -right-1 bg-slate-950 text-white text-[9px] w-4 h-4 sm:w-5 sm:h-5 flex items-center justify-center rounded-full border border-slate-700 font-bold shadow">{p.hand?.length || 0}</div>}
                        </div>
-                       <span className="text-[10px] mt-1 font-bold uppercase tracking-wider text-slate-300 bg-slate-900/80 px-2 rounded max-w-[80px] truncate">{p.name}</span>
+                       <span className="text-[9px] mt-1 font-bold uppercase tracking-wider text-slate-300 bg-slate-900/80 px-2 rounded max-w-[80px] truncate">{p.name}</span>
                    </div>
                );
            })}
@@ -568,11 +606,11 @@ export default function Game() {
            {/* TABLE */}
            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-32 flex items-center justify-center">
                 <div className="relative w-full h-full flex items-center justify-center">
-                    {gameData.centerPile.length === 0 && <div className="border-2 border-dashed border-slate-700/50 rounded-xl w-20 h-28 flex items-center justify-center"><span className="text-[9px] text-slate-600 font-bold uppercase">Empty</span></div>}
+                    {gameData.centerPile.length === 0 && <div className="border-2 border-dashed border-slate-700/50 rounded-xl w-14 h-24 sm:w-20 sm:h-28 flex items-center justify-center"><span className="text-[9px] text-slate-600 font-bold uppercase">Empty</span></div>}
                     {gameData.centerPile.map((play, i) => (
-                        <div key={i} className="absolute w-20 h-32 bg-white rounded-lg shadow-2xl border border-slate-300 flex flex-col items-center justify-center transition-all duration-300" style={{ transform: `rotate(${(i - gameData.centerPile.length/2) * 15}deg) translateY(${i * -4}px)`, zIndex: i }}>
-                            <span className={`text-2xl ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.suit}</span>
-                            <span className={`font-bold text-lg ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.display}</span>
+                        <div key={i} className="absolute w-14 h-24 sm:w-20 sm:h-32 bg-white rounded-lg shadow-2xl border border-slate-300 flex flex-col items-center justify-center transition-all duration-300" style={{ transform: `rotate(${(i - gameData.centerPile.length/2) * 15}deg) translateY(${i * -4}px)`, zIndex: i }}>
+                            <span className={`text-xl sm:text-2xl ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.suit}</span>
+                            <span className={`font-bold text-base sm:text-lg ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.display}</span>
                             <div className="absolute bottom-1 text-[8px] text-slate-400 uppercase font-bold truncate max-w-[60px]">{gameData.players.find(p=>p.id===play.playerId)?.name}</div>
                         </div>
                     ))}
@@ -587,16 +625,20 @@ export default function Game() {
                <div className="flex items-end justify-center w-full max-w-lg relative" style={{ height: '140px' }}>
                    {myPlayer.hand.map((card, idx) => {
                        const totalCards = myPlayer.hand.length;
-                       const overlap = totalCards > 10 ? -45 : (totalCards > 7 ? -35 : -20);
+                       // Dynamic Squeezing for Mobile - Tighter values
+                       const overlap = totalCards > 10 ? -25 : (totalCards > 7 ? -20 : -10); // Mobile default
+                       
+                       // Responsive Styles
                        const style = { marginLeft: idx === 0 ? 0 : `${overlap}px`, zIndex: idx };
+                       
                        const isMandatory = gameData.mandatoryCard && card.id === gameData.mandatoryCard.id;
                        const canPlay = isMyTurn && (!gameData.mandatoryCard || isMandatory) && (gameData.centerPile.length === 0 || card.suit === gameData.leadSuit || !myPlayer.hand.some(c => c.suit === gameData.leadSuit));
 
                        return (
-                           <button key={card.id} onClick={() => handleCardClick(card)} disabled={!isMyTurn} style={style} className={`w-24 h-36 bg-white rounded-xl shadow-2xl border relative flex flex-col items-center justify-between p-2 flex-shrink-0 transition-all duration-200 origin-bottom ${canPlay ? 'hover:-translate-y-6 hover:scale-110 cursor-pointer border-slate-300 z-50' : 'border-slate-300 opacity-100' /* REMOVED DIMMING */ } ${isMandatory ? 'ring-4 ring-amber-500 animate-bounce' : ''}`}>
-                                <div className="w-full flex justify-between pointer-events-none"><span className={`font-bold text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
-                                <div className={`text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
-                                <div className="w-full flex justify-between rotate-180 pointer-events-none"><span className={`font-bold text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
+                           <button key={card.id} onClick={() => handleCardClick(card)} disabled={!isMyTurn} style={style} className={`w-14 h-24 sm:w-20 sm:h-32 md:w-24 md:h-36 bg-white rounded-xl shadow-2xl border relative flex flex-col items-center justify-between p-1 sm:p-2 flex-shrink-0 transition-all duration-200 origin-bottom ${canPlay ? 'hover:-translate-y-6 hover:scale-110 cursor-pointer border-slate-300 z-50' : 'border-slate-300 opacity-100'} ${isMandatory ? 'ring-4 ring-amber-500 animate-bounce' : ''}`}>
+                                <div className="w-full flex justify-between pointer-events-none"><span className={`font-bold text-sm sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
+                                <div className={`text-2xl sm:text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
+                                <div className="w-full flex justify-between rotate-180 pointer-events-none"><span className={`font-bold text-sm sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
                            </button>
                        )
                    })}
@@ -612,6 +654,8 @@ export default function Game() {
                <button onClick={()=>setShowBurnt(false)} className="w-full mt-2 text-[10px] text-slate-400 uppercase font-bold tracking-wider">Close</button>
            </div>
        )}
+       
+       <div className="fixed bottom-2 w-full text-center text-slate-700 text-[10px] font-sans pointer-events-none">Royal Court © Rohan Jadhav</div>
     </div>
   );
 }
