@@ -175,7 +175,6 @@ export default function Game() {
     if (!gameData) return;
     let cardToPlay = null;
 
-    // 1. Mandatory Play Check
     if (gameData.mandatoryCard) {
         cardToPlay = bot.hand.find(c => c.id === gameData.mandatoryCard.id);
         if (cardToPlay) {
@@ -184,9 +183,8 @@ export default function Game() {
         }
     }
 
-    // 2. Game Logic
     if (gameData.centerPile.length === 0) {
-      // --- LEADING ---
+      // LEADING
       const suitsInHand = {};
       bot.hand.forEach(c => {
           if(!suitsInHand[c.suit]) suitsInHand[c.suit] = [];
@@ -196,53 +194,50 @@ export default function Game() {
       const avoidList = gameData.avoidSuits || [];
       const validSuits = Object.keys(suitsInHand).filter(s => !avoidList.includes(s));
       
-      // If we have safe suits, play them
+      // Smart Choice: If possible, play a suit that hasn't been cut yet.
+      // If ALL suits are risky, then play the one with lowest cards.
+      let chosenSuit = null;
+
       if (validSuits.length > 0) {
-          // Prefer suit with highest cards to clear them? Or safe play?
-          const chosenSuit = validSuits[Math.floor(Math.random() * validSuits.length)];
+          chosenSuit = validSuits[Math.floor(Math.random() * validSuits.length)];
+          // Play HIGH card to clear it
           const cardsOfSuit = suitsInHand[chosenSuit];
-          // Strategy: Play highest to clear trick safely
           cardToPlay = cardsOfSuit[0]; 
       } else {
-          // DANGER: We must play a suit that was previously cut
-          // Strategy: Play LOWEST card to minimize loss
+          // Forced to play risky suit. Play LOWEST card to save high ones.
           const riskySuit = Object.keys(suitsInHand)[0];
           const cardsOfSuit = suitsInHand[riskySuit];
-          cardToPlay = cardsOfSuit[cardsOfSuit.length - 1]; // Lowest card
+          cardToPlay = cardsOfSuit[cardsOfSuit.length - 1]; 
       }
 
     } else {
-      // --- FOLLOWING ---
+      // FOLLOWING
       const followCards = bot.hand.filter(c => c.suit === gameData.leadSuit);
       
       if (followCards.length > 0) {
-          // Check if table is already cut (someone played different suit)
           const isCut = gameData.centerPile.some(p => p.card.suit !== gameData.leadSuit);
           
           if (isCut) {
-              // Table is cut, we can't win. Save high cards. Play LOWEST.
+              // Table is cut. We lose this trick. Play LOWEST card.
               cardToPlay = followCards[followCards.length - 1];
           } else {
-              // No cut yet. Try to win?
-              // Find current highest card on table
+              // Try to win?
               let highestRankOnTable = -1;
               gameData.centerPile.forEach(p => {
                   if (p.card.rank > highestRankOnTable) highestRankOnTable = p.card.rank;
               });
               
-              // Do I have a card higher than table?
-              // followCards are sorted High to Low.
               if (followCards[0].rank > highestRankOnTable) {
-                  // I can win. Play highest to secure clear.
+                  // Win and Clear
                   cardToPlay = followCards[0];
               } else {
-                  // I can't win. Duck. Play LOWEST.
+                  // Can't win. Save high cards. Play LOWEST.
                   cardToPlay = followCards[followCards.length - 1];
               }
           }
       } else {
-          // --- CUTTING ---
-          // No matching suit. Play lowest card of any other suit (Junk)
+          // CUTTING
+          // Play lowest junk card of another suit
           cardToPlay = bot.hand[bot.hand.length - 1]; 
       }
     }
@@ -304,8 +299,7 @@ export default function Game() {
                 });
                 newPlayers[victimIdx].status = 'playing'; 
                 
-                // --- UPDATE BOT MEMORY ---
-                // Add the cut suit to avoid list so bots don't lead it again
+                // Add to Avoid List
                 let newAvoidSuits = [...(gameData.avoidSuits || [])];
                 if (!newAvoidSuits.includes(newLeadSuit)) {
                     newAvoidSuits.push(newLeadSuit);
@@ -597,7 +591,7 @@ export default function Game() {
   const isMyTurn = gameData.currentTurn === myPlayer.id;
   const getRelativeIndex = (theirIndex) => (theirIndex - myPlayer.id + gameData.players.length) % gameData.players.length;
   
-  // --- SYMMETRICAL SEATING ENGINE (FIXED) ---
+  // --- SYMMETRICAL SEATING ENGINE ---
   const getSeatPosition = (relIdx) => {
       const count = gameData.players.length;
       
