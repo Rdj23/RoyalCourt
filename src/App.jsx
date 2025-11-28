@@ -73,11 +73,7 @@ export default function Game() {
   const [gameData, setGameData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
-  
-  // --- FIXED: ADDED MISSING STATE ---
   const [showBurnt, setShowBurnt] = useState(false);
-
-  // Lobby Options
   const [targetPlayers, setTargetPlayers] = useState(4); 
   const [fillWithBots, setFillWithBots] = useState(true);
 
@@ -118,7 +114,7 @@ export default function Game() {
   useEffect(() => {
     if (!gameData || !user) return;
     if (gameData.gameState !== 'playing') return;
-    if (gameData.hostId !== user.uid) return; // Only host runs bots
+    if (gameData.hostId !== user.uid) return; 
 
     const currentPlayer = gameData.players[gameData.currentTurn];
     if (currentPlayer && currentPlayer.isBot && currentPlayer.status === 'playing') {
@@ -135,7 +131,6 @@ export default function Game() {
     if (!gameData) return;
     let cardToPlay = null;
 
-    // Mandatory Check
     if (gameData.mandatoryCard) {
         cardToPlay = bot.hand.find(c => c.id === gameData.mandatoryCard.id);
         if (cardToPlay) {
@@ -145,7 +140,6 @@ export default function Game() {
     }
 
     if (gameData.centerPile.length === 0) {
-      // LEADING
       const suitsInHand = {};
       bot.hand.forEach(c => {
           if(!suitsInHand[c.suit]) suitsInHand[c.suit] = [];
@@ -155,29 +149,22 @@ export default function Game() {
       if (validSuits.length > 0) {
           const chosenSuit = validSuits[Math.floor(Math.random() * validSuits.length)];
           const cardsOfSuit = suitsInHand[chosenSuit];
-          // Mix of aggressive and safe play
           const playHigh = Math.random() > 0.4;
           cardToPlay = playHigh ? cardsOfSuit[0] : cardsOfSuit[cardsOfSuit.length - 1];
       } else {
-          // Should not happen if hand not empty
           cardToPlay = bot.hand[0];
       }
-
     } else {
-      // FOLLOWING
       const hasSuit = bot.hand.filter(c => c.suit === gameData.leadSuit);
       if (hasSuit.length > 0) {
-        cardToPlay = hasSuit[0]; // Play highest to clear
+        cardToPlay = hasSuit[0]; 
       } else {
-        // CUTTING: Throw lowest junk
         cardToPlay = bot.hand[bot.hand.length - 1]; 
       }
     }
     
     if (cardToPlay) {
         submitMove(bot.id, cardToPlay);
-    } else {
-        console.error("Bot could not find a card to play!");
     }
   };
 
@@ -267,7 +254,6 @@ export default function Game() {
     let currentPlayers = [...gameData.players];
     const needed = gameData.targetPlayers;
     
-    // FILL WITH BOTS IF ENABLED
     if (gameData.fillWithBots && currentPlayers.length < needed) {
         const botsNeeded = needed - currentPlayers.length;
         for(let i=0; i<botsNeeded; i++) {
@@ -283,15 +269,10 @@ export default function Game() {
     }
 
     let deck = fisherYatesShuffle(createDeck());
-    
-    // Cards Per Player Logic
     const playerCount = currentPlayers.length;
-    // Standard rules: 4 players = 13 cards. 5 players = 10 cards.
-    // If we have weird numbers (like 2 or 3 humans, no bots), assume 13 cards max or until deck exhaustion.
     let handSize = 13;
     if (playerCount === 5) handSize = 10;
     
-    // Deal Cards
     currentPlayers = currentPlayers.map(p => {
         const hand = deck.splice(0, handSize).sort((a,b) => {
             if (a.suit !== b.suit) return SUIT_ORDER[a.suit] - SUIT_ORDER[b.suit];
@@ -300,9 +281,8 @@ export default function Game() {
         return { ...p, hand, status: 'playing' };
     });
 
-    const burnt = deck; // Remainder (usually 2 cards for 5 players)
+    const burnt = deck; 
 
-    // First Player (Highest Spade)
     const searchOrder = [...VALUES].reverse(); 
     let starterIndex = 0;
     let starterCard = null;
@@ -319,7 +299,6 @@ export default function Game() {
       if (starterCard) break;
     }
 
-    // Init Scores
     let finalScores = { ...gameData.scores };
     currentPlayers.forEach(p => {
         if(finalScores[p.name] === undefined) finalScores[p.name] = 0;
@@ -343,15 +322,21 @@ export default function Game() {
   const submitMove = async (playerId, card) => {
     const gameRef = doc(db, 'games', roomCode);
     
-    // Clone Data
     let newPlayers = [...gameData.players];
     let newPile = [...gameData.centerPile, { playerId, card }];
     
     const playerIndex = newPlayers.findIndex(p => p.id === playerId);
-    if (playerIndex === -1) return; // Safety check
+    if (playerIndex === -1) return; 
 
     // Remove card
     newPlayers[playerIndex].hand = newPlayers[playerIndex].hand.filter(c => c.id !== card.id);
+    
+    // --- FIX: IMMEDIATE SAFE CHECK ---
+    // If hand is empty after play, mark as safe immediately.
+    // This prevents future turns from assigning to this player.
+    if (newPlayers[playerIndex].hand.length === 0) {
+        newPlayers[playerIndex].status = 'safe';
+    }
     
     let updates = {
         players: newPlayers,
@@ -367,9 +352,17 @@ export default function Game() {
 
     const isDifferentSuit = card.suit !== currentLeadSuit && currentLeadSuit !== null;
     const activeCount = newPlayers.filter(p => p.status === 'playing').length;
-    const isTrickComplete = newPile.length === activeCount;
+    // Note: Since we marked player 'safe' above if they emptied hand, we check original status for trick completion logic
+    // Actually, simply checking pile length against active count is safer.
+    // Wait, if player becomes safe mid-trick, activeCount drops? 
+    // No, for the *current trick*, everyone needs to play.
+    // Let's use pile length vs total players who *started* the round (minus safe ones *before* this move).
+    // Simpler: Just check if pile length matches expected players.
+    // If 4 players started, and 1 is safe, we need 3 cards.
+    // The player who just played is counted as "playing" for the purpose of this trick.
+    const isTrickComplete = newPile.length === activeCount + (newPlayers[playerIndex].status === 'safe' ? 1 : 0);
 
-    // --- LOGIC: CUT ---
+    // --- CUT LOGIC ---
     if (isDifferentSuit) {
         let highestRank = -1;
         let victimId = -1;
@@ -387,6 +380,8 @@ export default function Game() {
                 if (a.suit !== b.suit) return SUIT_ORDER[a.suit] - SUIT_ORDER[b.suit];
                 return b.rank - a.rank;
             });
+            // If victim was safe (rare but possible if they cleared previous trick?), they are back in game
+            newPlayers[victimIdx].status = 'playing';
 
             updates.players = newPlayers;
             updates.centerPile = [];
@@ -399,8 +394,8 @@ export default function Game() {
         }
     }
 
-    // --- LOGIC: CLEAR ---
-    if (isTrickComplete) {
+    // --- CLEAR LOGIC ---
+    if (newPile.length >= activeCount + (newPlayers[playerIndex].status === 'safe' ? 1 : 0)) {
         let highestRank = -1;
         let winnerId = -1;
         newPile.forEach(play => {
@@ -418,11 +413,10 @@ export default function Game() {
 
         const winnerIdx = newPlayers.findIndex(p => p.id === winnerId);
         
-        // Check Safe
-        if (winnerIdx !== -1 && newPlayers[winnerIdx].hand.length === 0) {
-            newPlayers[winnerIdx].status = 'safe';
-            updates.gameLog += ` ${newPlayers[winnerIdx].name} is SAFE!`;
-            
+        // Winner leads next, UNLESS winner is safe.
+        if (newPlayers[winnerIdx].status === 'safe') {
+            updates.gameLog += ` ${winnerName} is SAFE!`;
+            // Pass lead to next active player
             let nextP = (winnerIdx + 1) % newPlayers.length;
             let safetyLoop = 0;
             while (newPlayers[nextP].status === 'safe' && safetyLoop < newPlayers.length) {
@@ -436,13 +430,11 @@ export default function Game() {
         
         updates.players = newPlayers;
         
-        // Check Game Over
         const remaining = newPlayers.filter(p => p.status === 'playing');
         if (remaining.length <= 1) {
             updates.gameState = 'finished';
             const loser = remaining[0];
             updates.gameLog = `ROUND OVER! ${loser ? loser.name : 'Unknown'} lost.`;
-            
             let finalScores = { ...gameData.scores };
             if (loser) finalScores[loser.name] = (finalScores[loser.name] || 0) + 1;
             updates.scores = finalScores;
@@ -453,7 +445,7 @@ export default function Game() {
         return;
     }
 
-    // --- LOGIC: NEXT TURN ---
+    // --- NEXT TURN ---
     let nextIndex = (gameData.currentTurn + 1) % newPlayers.length;
     let safetyLoop = 0;
     while (newPlayers[nextIndex].status === 'safe' && safetyLoop < newPlayers.length) {
@@ -471,7 +463,6 @@ export default function Game() {
     if (!myPlayer) return;
     if (gameData.currentTurn !== myPlayer.id) return; 
 
-    // Validation
     if (gameData.mandatoryCard && card.id !== gameData.mandatoryCard.id) return alert(`Must play ${gameData.mandatoryCard.val}♠️!`);
     if (gameData.centerPile.length > 0 && gameData.leadSuit) {
         const hasSuit = myPlayer.hand.some(c => c.suit === gameData.leadSuit);
@@ -494,7 +485,6 @@ export default function Game() {
                     <h2 className="text-3xl font-bold mb-2 text-amber-500">{roomCode}</h2>
                     <p className="text-slate-400 mb-6 text-sm">Share code with friends</p>
                     
-                    {/* HOST CONTROLS */}
                     {gameData.hostId === user.uid && (
                         <div className="flex flex-col gap-3 mb-6">
                              <div className="flex justify-center gap-2">
@@ -527,7 +517,6 @@ export default function Game() {
                                 <span>{p.name} {p.uid === user.uid && "(You)"}</span>
                             </div>
                         ))}
-                        {/* Ghost Players for Bots */}
                         {gameData.fillWithBots && Array.from({length: Math.max(0, gameData.targetPlayers - gameData.players.length)}).map((_, i) => (
                              <div key={`ghost-${i}`} className="flex items-center gap-3 bg-slate-900/20 p-2 rounded border border-dashed border-slate-700/30 text-slate-500">
                                 <Bot size={16} />
@@ -561,18 +550,15 @@ export default function Game() {
 
                 <div className="bg-slate-800 p-6 rounded-2xl border border-slate-700 space-y-4 shadow-2xl">
                     {errorMsg && <div className="text-rose-400 text-xs text-center font-bold bg-rose-900/20 p-2 rounded">{errorMsg}</div>}
-                    
                     <input 
                         value={playerName}
                         onChange={e => setPlayerName(e.target.value)}
                         className="w-full bg-slate-900 border border-slate-600 rounded-xl px-4 py-3 text-white text-center font-bold focus:border-amber-500 outline-none"
                         placeholder="ENTER YOUR NAME"
                     />
-
                     <div className="grid grid-cols-2 gap-3">
                         <button onClick={handleCreateRoom} className="bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold py-4 rounded-xl flex flex-col items-center gap-1">
-                            <Users size={20} />
-                            Create Room
+                            <Users size={20} /> Create Room
                         </button>
                         <div className="space-y-2">
                              <input 
@@ -582,9 +568,7 @@ export default function Game() {
                                 maxLength={4}
                                 className="w-full bg-slate-900 border border-slate-600 rounded-xl px-2 py-2 text-center text-white font-mono tracking-widest uppercase font-bold"
                              />
-                             <button onClick={handleJoinRoom} className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-2 rounded-xl text-xs">
-                                Join
-                             </button>
+                             <button onClick={handleJoinRoom} className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-2 rounded-xl text-xs">Join</button>
                         </div>
                     </div>
                 </div>
@@ -595,19 +579,34 @@ export default function Game() {
 
   // GAME VIEW
   const myPlayer = gameData.players.find(p => p.uid === user.uid);
-  
-  // --- BLANK SCREEN FIX ---
-  // If myPlayer is not found yet (sync delay), show loading instead of crashing
-  if (!myPlayer) {
-      return (
-          <div className="h-screen bg-slate-900 text-white flex flex-col items-center justify-center">
-              <RotateCcw className="animate-spin mb-4 text-amber-500" />
-              <p>Entering the Court...</p>
-          </div>
-      );
-  }
+  if (!myPlayer) return <div className="h-screen bg-slate-900 text-white flex flex-col items-center justify-center"><RotateCcw className="animate-spin mb-4 text-amber-500"/><p>Entering the Court...</p></div>;
   
   const isMyTurn = gameData.currentTurn === myPlayer.id;
+
+  // --- POSITION LOGIC ---
+  // Calculates where opponents sit relative to "Me" at index 0.
+  const getRelativeIndex = (theirIndex) => {
+      const total = gameData.players.length;
+      const myIndex = myPlayer.id;
+      return (theirIndex - myIndex + total) % total;
+  };
+
+  // Helper to determine CSS position based on relative seat
+  const getSeatPosition = (relativeIndex, total) => {
+      // 4 Players: 0(Me), 1(Left), 2(Top), 3(Right)
+      // 5 Players: 0(Me), 1(Left), 2(Top-Left), 3(Top-Right), 4(Right)
+      if (total === 4) {
+          if (relativeIndex === 1) return 'left-2 top-1/2 -translate-y-1/2'; // Left
+          if (relativeIndex === 2) return 'top-16 left-1/2 -translate-x-1/2'; // Top
+          if (relativeIndex === 3) return 'right-2 top-1/2 -translate-y-1/2'; // Right
+      } else {
+          if (relativeIndex === 1) return 'left-2 top-1/2 -translate-y-1/2'; // Left
+          if (relativeIndex === 2) return 'top-16 left-1/3 -translate-x-1/2'; // Top Left
+          if (relativeIndex === 3) return 'top-16 right-1/3 translate-x-1/2'; // Top Right
+          if (relativeIndex === 4) return 'right-2 top-1/2 -translate-y-1/2'; // Right
+      }
+      return 'hidden';
+  };
 
   return (
     <div className="fixed inset-0 bg-[#0f172a] flex flex-col text-slate-200 font-sans overflow-hidden select-none">
@@ -625,72 +624,82 @@ export default function Game() {
 
        {/* LOG */}
        <div className="absolute top-14 w-full flex justify-center z-20 pointer-events-none">
-           <div className="bg-slate-900/90 backdrop-blur px-4 py-1.5 rounded-b-xl border-x border-b border-slate-700 shadow-xl text-xs text-amber-100 font-bold animate-pulse">
+           <div className="bg-slate-900/90 backdrop-blur px-4 py-1.5 rounded-b-xl border-x border-b border-slate-700 shadow-xl text-xs text-amber-100 font-bold animate-pulse text-center">
                {gameData.gameLog}
            </div>
        </div>
 
-       {/* OPPONENTS */}
-       <div className="mt-12 flex justify-center gap-3 px-2">
-           {gameData.players.filter(p => p.uid !== user.uid).map(p => (
-               <div key={p.id} className={`flex flex-col items-center transition-all duration-500 ${gameData.currentTurn === p.id ? 'opacity-100 scale-110' : 'opacity-50 scale-90'}`}>
-                   <div className={`w-10 h-10 rounded-full flex items-center justify-center border-2 bg-slate-800 relative
-                       ${gameData.currentTurn === p.id ? 'border-amber-400 shadow-[0_0_10px_rgba(251,191,36,0.5)]' : 'border-slate-600'}
-                   `}>
-                       {p.status === 'safe' ? <Crown className="text-emerald-400 w-4 h-4" /> : (p.isBot ? <Bot className="text-slate-400 w-4 h-4" /> : <User className="text-slate-400 w-4 h-4" />)}
-                       {p.status === 'playing' && (
-                           <div className="absolute -bottom-1 -right-1 bg-slate-950 text-white text-[9px] w-4 h-4 flex items-center justify-center rounded-full border border-slate-700 font-bold">
-                               {p.hand?.length || 0}
-                           </div>
-                       )}
+       {/* GAME ARENA */}
+       <div className="flex-1 relative w-full h-full">
+           
+           {/* OPPONENTS (ABSOLUTE POSITIONING) */}
+           {gameData.players.map((p) => {
+               if (p.uid === user.uid) return null; // Don't render self here
+               const relIdx = getRelativeIndex(p.id);
+               const posClass = getSeatPosition(relIdx, gameData.players.length);
+               
+               return (
+                   <div key={p.id} className={`absolute ${posClass} flex flex-col items-center transition-all duration-500`}>
+                       <div className={`w-12 h-12 rounded-full flex items-center justify-center border-2 bg-slate-800 relative shadow-lg
+                           ${gameData.currentTurn === p.id ? 'border-amber-400 shadow-amber-500/50 scale-110' : 'border-slate-600 opacity-80'}
+                       `}>
+                           {p.status === 'safe' ? <Crown className="text-emerald-400 w-6 h-6" /> : (p.isBot ? <Bot className="text-slate-400 w-6 h-6" /> : <User className="text-slate-400 w-6 h-6" />)}
+                           {p.status === 'playing' && (
+                               <div className="absolute -bottom-1 -right-1 bg-slate-950 text-white text-[10px] w-5 h-5 flex items-center justify-center rounded-full border border-slate-700 font-bold shadow">
+                                   {p.hand?.length || 0}
+                               </div>
+                           )}
+                       </div>
+                       <span className="text-[10px] mt-1 font-bold uppercase tracking-wider text-slate-300 bg-slate-900/80 px-2 rounded max-w-[80px] truncate">
+                           {p.name}
+                       </span>
                    </div>
-                   <span className="text-[8px] mt-1 font-bold uppercase tracking-wider text-slate-400 max-w-[50px] truncate">{p.name}</span>
-               </div>
-           ))}
-       </div>
+               );
+           })}
 
-       {/* TABLE */}
-       <div className="flex-1 flex items-center justify-center relative perspective-[1000px]">
-            <div className="relative w-24 h-32 flex items-center justify-center">
-                {gameData.centerPile.length === 0 && (
-                     <div className="w-full h-full border-2 border-dashed border-slate-700/50 rounded-xl flex items-center justify-center">
-                         <div className="text-[9px] uppercase font-bold text-slate-600">Table Empty</div>
-                     </div>
-                )}
-                {gameData.centerPile.map((play, i) => (
-                    <div 
-                        key={i}
-                        className="absolute w-20 h-32 bg-white rounded-lg shadow-xl border border-slate-200 flex flex-col items-center justify-center transition-all"
-                        style={{
-                            transform: `rotate(${(i - gameData.centerPile.length/2) * 12}deg) translateY(${i * -3}px)`,
-                            zIndex: i
-                        }}
-                    >
-                        <span className={`text-2xl ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.suit}</span>
-                        <span className={`font-bold text-lg ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.display}</span>
-                        <div className="absolute bottom-1 text-[8px] text-slate-400 uppercase font-bold truncate max-w-[60px]">
-                            {gameData.players.find(p=>p.id===play.playerId)?.name || 'Unknown'}
+           {/* CENTER TABLE */}
+           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-32 flex items-center justify-center">
+                {/* Felt Texture */}
+                <div className="absolute inset-0 bg-emerald-900/20 rounded-full blur-xl"></div>
+                
+                <div className="relative w-full h-full flex items-center justify-center">
+                    {gameData.centerPile.length === 0 && (
+                        <div className="border-2 border-dashed border-slate-700/50 rounded-xl w-20 h-28 flex items-center justify-center">
+                            <span className="text-[9px] text-slate-600 font-bold uppercase">Empty</span>
                         </div>
-                    </div>
-                ))}
-            </div>
+                    )}
+                    {gameData.centerPile.map((play, i) => (
+                        <div 
+                            key={i}
+                            className="absolute w-20 h-32 bg-white rounded-lg shadow-2xl border border-slate-300 flex flex-col items-center justify-center transition-all duration-300"
+                            style={{
+                                transform: `rotate(${(i - gameData.centerPile.length/2) * 15}deg) translateY(${i * -4}px)`,
+                                zIndex: i
+                            }}
+                        >
+                            <span className={`text-2xl ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.suit}</span>
+                            <span className={`font-bold text-lg ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.display}</span>
+                            <div className="absolute bottom-1 text-[8px] text-slate-400 uppercase font-bold truncate max-w-[60px]">
+                                {gameData.players.find(p=>p.id===play.playerId)?.name}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+           </div>
        </div>
 
-       {/* MY HAND - RESPONSIVE CONTAINER */}
-       <div className="mb-2 flex flex-col items-center w-full">
-           <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 ${isMyTurn ? 'text-amber-400 animate-pulse' : 'text-slate-600'}`}>
-               {isMyTurn ? "Your Turn" : "Opponent's Turn"}
+       {/* MY HAND */}
+       <div className="h-40 w-full flex flex-col items-center justify-end pb-2 relative z-20">
+           <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 px-4 py-1 rounded-full ${isMyTurn ? 'bg-amber-500/20 text-amber-400 animate-pulse border border-amber-500/50' : 'bg-slate-800/50 text-slate-500'}`}>
+               {isMyTurn ? "Your Turn" : "Wait..."}
            </div>
            
-           {/* Smart Responsive Card Container */}
-           <div className="h-36 w-full flex justify-center overflow-visible px-4">
-               <div className="flex items-end justify-center h-full w-full max-w-2xl relative">
+           <div className="w-full flex justify-center overflow-visible px-4">
+               <div className="flex items-end justify-center w-full max-w-lg relative" style={{ height: '140px' }}>
                    {myPlayer.hand.map((card, idx) => {
-                       // Dynamic Squeeze: The more cards you have, the more they overlap
                        const totalCards = myPlayer.hand.length;
-                       // Tighten spacing significantly if hand is large to keep it on screen
+                       // Dynamic Squeezing for Mobile
                        const overlap = totalCards > 10 ? -45 : (totalCards > 7 ? -35 : -20);
-                       
                        const style = { marginLeft: idx === 0 ? 0 : `${overlap}px`, zIndex: idx };
                        
                        const isMandatory = gameData.mandatoryCard && card.id === gameData.mandatoryCard.id;
@@ -705,17 +714,17 @@ export default function Game() {
                                 disabled={!isMyTurn}
                                 style={style}
                                 className={`
-                                    w-20 h-32 bg-white rounded-xl shadow-lg border relative flex flex-col items-center justify-between p-2 flex-shrink-0 transition-transform transform origin-bottom
-                                    ${canPlay ? 'hover:-translate-y-4 cursor-pointer border-slate-300 z-50' : 'brightness-75 translate-y-4 border-slate-400 cursor-not-allowed'}
+                                    w-24 h-36 bg-white rounded-xl shadow-2xl border relative flex flex-col items-center justify-between p-2 flex-shrink-0 transition-all duration-200 origin-bottom
+                                    ${canPlay ? 'hover:-translate-y-6 hover:scale-110 cursor-pointer border-slate-300 z-50' : 'brightness-75 translate-y-6 border-slate-400 cursor-not-allowed scale-90 opacity-80'}
                                     ${isMandatory ? 'ring-4 ring-amber-500 animate-bounce' : ''}
                                 `}
                            >
                                 <div className="w-full flex justify-between pointer-events-none">
-                                    <span className={`font-bold text-sm ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span>
+                                    <span className={`font-bold text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span>
                                 </div>
-                                <div className={`text-3xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
+                                <div className={`text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
                                 <div className="w-full flex justify-between rotate-180 pointer-events-none">
-                                    <span className={`font-bold text-sm ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span>
+                                    <span className={`font-bold text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span>
                                 </div>
                            </button>
                        )
