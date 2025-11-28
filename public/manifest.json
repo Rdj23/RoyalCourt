@@ -1,0 +1,16 @@
+{
+  "name": "Royal Court",
+  "short_name": "RoyalCourt",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "vite.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ],
+  "orientation": "landscape"
+}
