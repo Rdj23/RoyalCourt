@@ -27,7 +27,7 @@ const RANK_VALUE = { '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9'
 
 // --- HELPERS ---
 const generateRoomCode = () => Math.random().toString(36).substring(2, 6).toUpperCase();
-const getSuitStyle = (suit) => (suit === '♥️' || suit === '♦️') ? 'text-rose-500' : 'text-slate-200';
+const getSuitStyle = (suit) => (suit === '♥️' || suit === '♦️') ? 'text-rose-600' : 'text-slate-900';
 
 const playSound = (type) => {
   if (!window.speechSynthesis) return;
@@ -395,8 +395,11 @@ export default function Game() {
     
     currentPlayers = currentPlayers.filter(p => !p.isBot);
 
-    if (gameData.fillWithBots && currentPlayers.length < needed) {
-        for(let i=0; i<needed - currentPlayers.length; i++) {
+    // Calculate Exact Bot Count
+    const botsNeeded = needed - currentPlayers.length;
+
+    if (gameData.fillWithBots && botsNeeded > 0) {
+        for(let i=0; i<botsNeeded; i++) {
             currentPlayers.push({ uid: `bot-${Date.now()}-${i}`, name: `Bot ${i+1}`, hand: [], status: 'playing', id: currentPlayers.length, isBot: true });
         }
     }
@@ -552,33 +555,21 @@ export default function Game() {
   const isMyTurn = gameData.currentTurn === myPlayer.id;
   const getRelativeIndex = (theirIndex) => (theirIndex - myPlayer.id + gameData.players.length) % gameData.players.length;
   
-  // --- SYMMETRICAL SEATING ENGINE ---
+  // --- BALANCED SEATING (BETTER POSITIONING) ---
   const getSeatPosition = (relIdx) => {
       const count = gameData.players.length;
-      
-      // 2 Players: 1 (Top Center)
-      if (count === 2) {
-          if (relIdx === 1) return 'top-[12%] left-1/2 -translate-x-1/2';
-      }
-      // 3 Players: 1 (Top Left), 2 (Top Right)
-      else if (count === 3) {
-          if (relIdx === 1) return 'top-[15%] left-[20%] -translate-x-1/2';
-          if (relIdx === 2) return 'top-[15%] right-[20%] translate-x-1/2';
-      }
-      // 4 Players: 1 (Left), 2 (Top), 3 (Right)
-      else if (count === 4) {
-          if (relIdx === 1) return 'left-[3%] top-1/2 -translate-y-1/2';
-          if (relIdx === 2) return 'top-[10%] left-1/2 -translate-x-1/2';
-          if (relIdx === 3) return 'right-[3%] top-1/2 -translate-y-1/2';
-      }
-      // 5 Players: 1 (Left), 2 (Top Left), 3 (Top Right), 4 (Right)
+      if (count === 4) {
+          if (relIdx === 1) return 'left-[3%] top-1/2 -translate-y-[80%]'; // Left
+          if (relIdx === 2) return 'top-[10%] left-1/2 -translate-x-1/2';  // Top Center
+          if (relIdx === 3) return 'right-[3%] top-1/2 -translate-y-[80%]'; // Right
+      } 
       else if (count === 5) {
           if (relIdx === 1) return 'left-[3%] top-1/2 -translate-y-[60%]';
-          if (relIdx === 2) return 'top-[10%] left-[25%] -translate-x-1/2';
-          if (relIdx === 3) return 'top-[10%] right-[25%] translate-x-1/2';
+          if (relIdx === 2) return 'top-[10%] left-[30%] -translate-x-1/2'; // Moved closer to center
+          if (relIdx === 3) return 'top-[10%] right-[30%] translate-x-1/2'; // Moved closer to center
           if (relIdx === 4) return 'right-[3%] top-1/2 -translate-y-[60%]';
       }
-      return 'hidden'; // Fallback
+      return 'hidden';
   };
 
   const amISafe = myPlayer.status === 'safe';
@@ -629,20 +620,18 @@ export default function Game() {
            </div>
        </div>
 
-       {/* PLAYER HAND - SQUEEZE LAYOUT (MOBILE OPTIMIZED) */}
+       {/* PLAYER HAND - COMPACT MOBILE LAYOUT */}
        {!isSpectating ? (
-           <div className="h-40 w-full flex flex-col items-center justify-end pb-2 relative z-20">
+           <div className="h-32 sm:h-40 w-full flex flex-col items-center justify-end pb-2 relative z-20">
                <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 px-4 py-1 rounded-full ${isMyTurn ? 'bg-amber-500/20 text-amber-400 animate-pulse border border-amber-500/50' : 'bg-slate-800/50 text-slate-500'}`}>{isMyTurn ? "Your Turn" : "Wait..."}</div>
                
                <div className="w-full flex justify-center px-2">
-                   <div className="flex items-end justify-center h-[120px] sm:h-[140px] w-full max-w-2xl relative">
+                   <div className="flex items-end justify-center h-[90px] sm:h-[140px] w-full max-w-2xl relative">
                        {myPlayer.hand.map((card, idx) => {
                            const total = myPlayer.hand.length;
-                           // Improved Squeeze Logic
-                           // Base overlap for desktop
                            const overlap = total > 10 ? -30 : (total > 7 ? -20 : -10);
-                           // Mobile specific tighter squeeze
-                           const mobileOverlap = total > 10 ? -24 : (total > 7 ? -18 : -10);
+                           // Tighter mobile squeeze
+                           const mobileOverlap = total > 10 ? -18 : (total > 7 ? -12 : -5);
                            
                            const style = { 
                                marginLeft: idx === 0 ? 0 : `${window.innerWidth < 640 ? mobileOverlap : overlap}px`, 
@@ -660,14 +649,14 @@ export default function Game() {
                                    disabled={!isMyTurn || localLock} 
                                    style={style}
                                    className={`
-                                       w-10 h-16 sm:w-16 sm:h-24 md:w-20 md:h-32 bg-white rounded-lg shadow-xl border border-slate-300 relative flex flex-col items-center justify-between p-1 flex-shrink-0 transition-transform duration-150
-                                       ${canPlay ? 'hover:-translate-y-4 active:-translate-y-6 z-50' : 'opacity-100' /* NO DIMMING */}
+                                       w-10 h-20 sm:w-20 sm:h-32 bg-white rounded-lg shadow-xl border border-slate-300 relative flex flex-col items-center justify-between p-1 flex-shrink-0 transition-transform duration-150
+                                       ${canPlay ? 'hover:-translate-y-4 active:-translate-y-6 z-50 shadow-amber-500/50' : 'opacity-100'}
                                        ${isMandatory ? 'ring-2 ring-amber-500 animate-bounce' : ''}
                                    `}
                                >
-                                    <div className="w-full flex justify-between pointer-events-none"><span className={`font-bold text-xs sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
+                                    <div className="w-full flex justify-between pointer-events-none p-0.5"><span className={`font-black text-sm sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
                                     <div className={`text-xl sm:text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
-                                    <div className="w-full flex justify-between rotate-180 pointer-events-none"><span className={`font-bold text-xs sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
+                                    <div className="w-full flex justify-between rotate-180 pointer-events-none p-0.5"><span className={`font-black text-sm sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
                                </button>
                            )
                        })}
