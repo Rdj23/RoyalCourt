@@ -249,6 +249,7 @@ export default function Game() {
         let updates = {};
         
         if (isDifferentSuit) {
+            // CUT LOGIC
             let highestRank = -1;
             let victimId = -1;
             tempPile.forEach(play => {
@@ -280,6 +281,7 @@ export default function Game() {
             }
         } 
         else if (isTrickComplete) {
+            // CLEAR LOGIC
             let highestRank = -1;
             let winnerId = -1;
             tempPile.forEach(play => {
@@ -550,22 +552,33 @@ export default function Game() {
   const isMyTurn = gameData.currentTurn === myPlayer.id;
   const getRelativeIndex = (theirIndex) => (theirIndex - myPlayer.id + gameData.players.length) % gameData.players.length;
   
-  // --- FIXED SEATING (PERCENTAGE BASED) ---
+  // --- SYMMETRICAL SEATING ENGINE ---
   const getSeatPosition = (relIdx) => {
-      // 4 Players: 1(Left), 2(Top), 3(Right)
-      if (gameData.players.length === 4) {
-          if (relIdx === 1) return 'left-[5%] top-1/2 -translate-y-[80%]';
-          if (relIdx === 2) return 'top-[12%] left-1/2 -translate-x-1/2';
-          if (relIdx === 3) return 'right-[5%] top-1/2 -translate-y-[80%]';
-      } 
-      // 5 Players: 1(Left), 2(TopLeft), 3(TopRight), 4(Right)
-      else {
-          if (relIdx === 1) return 'left-[2%] top-1/2 -translate-y-[80%]';
+      const count = gameData.players.length;
+      
+      // 2 Players: 1 (Top Center)
+      if (count === 2) {
+          if (relIdx === 1) return 'top-[12%] left-1/2 -translate-x-1/2';
+      }
+      // 3 Players: 1 (Top Left), 2 (Top Right)
+      else if (count === 3) {
+          if (relIdx === 1) return 'top-[15%] left-[20%] -translate-x-1/2';
+          if (relIdx === 2) return 'top-[15%] right-[20%] translate-x-1/2';
+      }
+      // 4 Players: 1 (Left), 2 (Top), 3 (Right)
+      else if (count === 4) {
+          if (relIdx === 1) return 'left-[3%] top-1/2 -translate-y-1/2';
+          if (relIdx === 2) return 'top-[10%] left-1/2 -translate-x-1/2';
+          if (relIdx === 3) return 'right-[3%] top-1/2 -translate-y-1/2';
+      }
+      // 5 Players: 1 (Left), 2 (Top Left), 3 (Top Right), 4 (Right)
+      else if (count === 5) {
+          if (relIdx === 1) return 'left-[3%] top-1/2 -translate-y-[60%]';
           if (relIdx === 2) return 'top-[10%] left-[25%] -translate-x-1/2';
           if (relIdx === 3) return 'top-[10%] right-[25%] translate-x-1/2';
-          if (relIdx === 4) return 'right-[2%] top-1/2 -translate-y-[80%]';
+          if (relIdx === 4) return 'right-[3%] top-1/2 -translate-y-[60%]';
       }
-      return 'hidden';
+      return 'hidden'; // Fallback
   };
 
   const amISafe = myPlayer.status === 'safe';
@@ -601,7 +614,7 @@ export default function Game() {
                );
            })}
 
-           {/* TABLE - Lowered to avoid overlap */}
+           {/* TABLE */}
            <div className="absolute top-[55%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-32 flex items-center justify-center">
                 <div className="relative w-full h-full flex items-center justify-center">
                     {gameData.centerPile.length === 0 && <div className="border-2 border-dashed border-slate-700/50 rounded-xl w-12 h-20 sm:w-14 sm:h-24 flex items-center justify-center"><span className="text-[9px] text-slate-600 font-bold uppercase">Empty</span></div>}
@@ -616,7 +629,7 @@ export default function Game() {
            </div>
        </div>
 
-       {/* PLAYER HAND - SQUEEZE LAYOUT (NO SCROLL) */}
+       {/* PLAYER HAND - SQUEEZE LAYOUT (MOBILE OPTIMIZED) */}
        {!isSpectating ? (
            <div className="h-40 w-full flex flex-col items-center justify-end pb-2 relative z-20">
                <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 px-4 py-1 rounded-full ${isMyTurn ? 'bg-amber-500/20 text-amber-400 animate-pulse border border-amber-500/50' : 'bg-slate-800/50 text-slate-500'}`}>{isMyTurn ? "Your Turn" : "Wait..."}</div>
@@ -625,11 +638,11 @@ export default function Game() {
                    <div className="flex items-end justify-center h-[120px] sm:h-[140px] w-full max-w-2xl relative">
                        {myPlayer.hand.map((card, idx) => {
                            const total = myPlayer.hand.length;
-                           // SQUEEZE LOGIC
-                           // If few cards, small negative margin. If many, large negative margin to fit.
-                           const overlap = total > 10 ? -28 : (total > 7 ? -20 : -10);
+                           // Improved Squeeze Logic
+                           // Base overlap for desktop
+                           const overlap = total > 10 ? -30 : (total > 7 ? -20 : -10);
                            // Mobile specific tighter squeeze
-                           const mobileOverlap = total > 10 ? -22 : (total > 7 ? -18 : -8);
+                           const mobileOverlap = total > 10 ? -24 : (total > 7 ? -18 : -10);
                            
                            const style = { 
                                marginLeft: idx === 0 ? 0 : `${window.innerWidth < 640 ? mobileOverlap : overlap}px`, 
@@ -647,7 +660,7 @@ export default function Game() {
                                    disabled={!isMyTurn || localLock} 
                                    style={style}
                                    className={`
-                                       w-12 h-20 sm:w-20 sm:h-32 bg-white rounded-lg shadow-xl border border-slate-300 relative flex flex-col items-center justify-between p-1 flex-shrink-0 transition-transform duration-150
+                                       w-10 h-16 sm:w-16 sm:h-24 md:w-20 md:h-32 bg-white rounded-lg shadow-xl border border-slate-300 relative flex flex-col items-center justify-between p-1 flex-shrink-0 transition-transform duration-150
                                        ${canPlay ? 'hover:-translate-y-4 active:-translate-y-6 z-50' : 'opacity-100' /* NO DIMMING */}
                                        ${isMandatory ? 'ring-2 ring-amber-500 animate-bounce' : ''}
                                    `}
