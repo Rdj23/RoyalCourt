@@ -6,13 +6,13 @@ import { getFirestore, doc, setDoc, updateDoc, onSnapshot, getDoc } from 'fireba
 
 // --- 🔴 PASTE YOUR FIREBASE CONFIG HERE 🔴 ---
 const firebaseConfig = {
-  apiKey: "PASTE_YOUR_API_KEY_HERE",
-  authDomain: "YOUR_PROJECT.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT.appspot.com",
-  messagingSenderId: "123456789",
-  appId: "1:123456789:web:abcdef"
-};
+    apiKey: "AIzaSyArYds-rUs9lzhU_AaL7c8SCxPOYQGDU2g",
+    authDomain: "royalcourt-c9e6e.firebaseapp.com",
+    projectId: "royalcourt-c9e6e",
+    storageBucket: "royalcourt-c9e6e.firebasestorage.app",
+    messagingSenderId: "720774216418",
+    appId: "1:720774216418:web:17491eeca417a1e9077cbb"
+  };
 // --------------------------------------------------
 
 // Initialize Firebase
