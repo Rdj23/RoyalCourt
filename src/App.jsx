@@ -78,7 +78,6 @@ export default function Game() {
   const [fillWithBots, setFillWithBots] = useState(true);
   
   // --- LOCK STATE: STRICT LOCAL LOCK ---
-  // This is reset ONLY when the turn changes in the database
   const [localLock, setLocalLock] = useState(false);
   
   // Auto Restart Logic
@@ -86,6 +85,9 @@ export default function Game() {
 
   // PWA Install Prompt
   const [deferredPrompt, setDeferredPrompt] = useState(null);
+
+  // Scroll Ref
+  const handContainerRef = useRef(null);
 
   // 1. AUTHENTICATION
   useEffect(() => {
@@ -121,18 +123,11 @@ export default function Game() {
         if (data.gameState === 'playing') {
             setRestartTimer(10);
             
-            // --- UNLOCK LOGIC ---
-            // If the turn has changed, release the local lock
-            // We check if the current turn ID from DB matches my ID
             const myPlayer = data.players.find(p => p.uid === user.uid);
             if (myPlayer) {
-                // If it IS my turn now, and I have NOT played into the center pile yet, unlock.
                 const haveIPlayed = data.centerPile.some(p => p.playerId === myPlayer.id);
                 if (data.currentTurn === myPlayer.id && !haveIPlayed) {
                     setLocalLock(false); 
-                } else {
-                    // If it's not my turn OR I have played, keep locked/ensure lock
-                    // (But we only force set true on click to avoid UI jitter, so we just don't set false here)
                 }
             }
         }
@@ -254,7 +249,6 @@ export default function Game() {
         let updates = {};
         
         if (isDifferentSuit) {
-            // CUT LOGIC
             let highestRank = -1;
             let victimId = -1;
             tempPile.forEach(play => {
@@ -286,7 +280,6 @@ export default function Game() {
             }
         } 
         else if (isTrickComplete) {
-            // CLEAR LOGIC
             let highestRank = -1;
             let winnerId = -1;
             tempPile.forEach(play => {
@@ -460,7 +453,6 @@ export default function Game() {
   };
 
   const handleCardClick = (card) => {
-    // LOCK LOCAL IMMEDIATELY
     if (localLock) return;
     
     if (!gameData || gameData.gameState !== 'playing') return;
@@ -473,7 +465,6 @@ export default function Game() {
         if (hasSuit && card.suit !== gameData.leadSuit) return alert("Must follow suit!");
     }
     
-    // SET LOCK
     setLocalLock(true);
     submitMove(myPlayer.id, card);
   };
@@ -558,20 +549,26 @@ export default function Game() {
   if (!myPlayer) return <div className="h-screen bg-slate-900 text-white flex flex-col items-center justify-center"><RotateCcw className="animate-spin mb-4 text-amber-500"/><p>Loading...</p></div>;
   const isMyTurn = gameData.currentTurn === myPlayer.id;
   const getRelativeIndex = (theirIndex) => (theirIndex - myPlayer.id + gameData.players.length) % gameData.players.length;
+  
+  // --- FIXED SEATING (PERCENTAGE BASED) ---
   const getSeatPosition = (relIdx) => {
-      // Better Mobile Positioning (Avoids Table Overlap)
+      // 4 Players: 1(Left), 2(Top), 3(Right)
       if (gameData.players.length === 4) {
-          if (relIdx === 1) return 'left-2 top-1/2 -translate-y-full'; // Left Player
-          if (relIdx === 2) return 'top-16 left-1/2 -translate-x-1/2'; // Top Player
-          if (relIdx === 3) return 'right-2 top-1/2 -translate-y-full'; // Right Player
-      } else {
-          if (relIdx === 1) return 'left-2 top-1/2 -translate-y-full';
-          if (relIdx === 2) return 'top-16 left-1/4 -translate-x-1/2';
-          if (relIdx === 3) return 'top-16 right-1/4 translate-x-1/2';
-          if (relIdx === 4) return 'right-2 top-1/2 -translate-y-full';
+          if (relIdx === 1) return 'left-[5%] top-1/2 -translate-y-[80%]';
+          if (relIdx === 2) return 'top-[12%] left-1/2 -translate-x-1/2';
+          if (relIdx === 3) return 'right-[5%] top-1/2 -translate-y-[80%]';
+      } 
+      // 5 Players: 1(Left), 2(TopLeft), 3(TopRight), 4(Right)
+      else {
+          if (relIdx === 1) return 'left-[2%] top-1/2 -translate-y-[80%]';
+          if (relIdx === 2) return 'top-[10%] left-[25%] -translate-x-1/2';
+          if (relIdx === 3) return 'top-[10%] right-[25%] translate-x-1/2';
+          if (relIdx === 4) return 'right-[2%] top-1/2 -translate-y-[80%]';
       }
       return 'hidden';
   };
+
+  const amISafe = myPlayer.status === 'safe';
 
   return (
     <div className="fixed inset-0 bg-[#0f172a] flex flex-col text-slate-200 font-sans overflow-hidden select-none">
@@ -604,14 +601,14 @@ export default function Game() {
                );
            })}
 
-           {/* TABLE */}
-           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-32 flex items-center justify-center">
+           {/* TABLE - Lowered to avoid overlap */}
+           <div className="absolute top-[55%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-32 flex items-center justify-center">
                 <div className="relative w-full h-full flex items-center justify-center">
-                    {gameData.centerPile.length === 0 && <div className="border-2 border-dashed border-slate-700/50 rounded-xl w-14 h-24 sm:w-20 sm:h-28 flex items-center justify-center"><span className="text-[9px] text-slate-600 font-bold uppercase">Empty</span></div>}
+                    {gameData.centerPile.length === 0 && <div className="border-2 border-dashed border-slate-700/50 rounded-xl w-12 h-20 sm:w-14 sm:h-24 flex items-center justify-center"><span className="text-[9px] text-slate-600 font-bold uppercase">Empty</span></div>}
                     {gameData.centerPile.map((play, i) => (
-                        <div key={i} className="absolute w-14 h-24 sm:w-20 sm:h-32 bg-white rounded-lg shadow-2xl border border-slate-300 flex flex-col items-center justify-center transition-all duration-300" style={{ transform: `rotate(${(i - gameData.centerPile.length/2) * 15}deg) translateY(${i * -4}px)`, zIndex: i }}>
-                            <span className={`text-xl sm:text-2xl ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.suit}</span>
-                            <span className={`font-bold text-base sm:text-lg ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.display}</span>
+                        <div key={i} className="absolute w-12 h-20 sm:w-16 sm:h-28 bg-white rounded-lg shadow-2xl border border-slate-300 flex flex-col items-center justify-center transition-all duration-300" style={{ transform: `rotate(${(i - gameData.centerPile.length/2) * 15}deg) translateY(${i * -3}px)`, zIndex: i }}>
+                            <span className={`text-lg sm:text-2xl ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.suit}</span>
+                            <span className={`font-bold text-sm sm:text-lg ${getSuitStyle(play.card.suit).replace('text-slate-200', 'text-slate-900')}`}>{play.card.display}</span>
                             <div className="absolute bottom-1 text-[8px] text-slate-400 uppercase font-bold truncate max-w-[60px]">{gameData.players.find(p=>p.id===play.playerId)?.name}</div>
                         </div>
                     ))}
@@ -619,19 +616,27 @@ export default function Game() {
            </div>
        </div>
 
-       {/* PLAYER HAND - HORIZONTAL SCROLL ENABLED (MOBILE FIX) */}
+       {/* PLAYER HAND - SQUEEZE LAYOUT (NO SCROLL) */}
        {!isSpectating ? (
            <div className="h-40 w-full flex flex-col items-center justify-end pb-2 relative z-20">
                <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 px-4 py-1 rounded-full ${isMyTurn ? 'bg-amber-500/20 text-amber-400 animate-pulse border border-amber-500/50' : 'bg-slate-800/50 text-slate-500'}`}>{isMyTurn ? "Your Turn" : "Wait..."}</div>
                
-               {/* SCROLLABLE CONTAINER */}
-               <div 
-                   ref={handContainerRef}
-                   className="w-full flex overflow-x-auto px-4 pb-2 snap-x snap-mandatory scroll-smooth"
-                   style={{ justifyContent: myPlayer.hand.length > 5 ? 'flex-start' : 'center' }}
-               >
-                   <div className="flex items-end h-[140px] min-w-max px-4 gap-1 sm:gap-2">
+               <div className="w-full flex justify-center px-2">
+                   <div className="flex items-end justify-center h-[120px] sm:h-[140px] w-full max-w-2xl relative">
                        {myPlayer.hand.map((card, idx) => {
+                           const total = myPlayer.hand.length;
+                           // SQUEEZE LOGIC
+                           // If few cards, small negative margin. If many, large negative margin to fit.
+                           const overlap = total > 10 ? -28 : (total > 7 ? -20 : -10);
+                           // Mobile specific tighter squeeze
+                           const mobileOverlap = total > 10 ? -22 : (total > 7 ? -18 : -8);
+                           
+                           const style = { 
+                               marginLeft: idx === 0 ? 0 : `${window.innerWidth < 640 ? mobileOverlap : overlap}px`, 
+                               zIndex: idx,
+                               transformOrigin: 'bottom center'
+                           };
+
                            const isMandatory = gameData.mandatoryCard && card.id === gameData.mandatoryCard.id;
                            const canPlay = isMyTurn && (!gameData.mandatoryCard || isMandatory) && (gameData.centerPile.length === 0 || card.suit === gameData.leadSuit || !myPlayer.hand.some(c => c.suit === gameData.leadSuit));
 
@@ -639,15 +644,16 @@ export default function Game() {
                                <button 
                                    key={card.id} 
                                    onClick={() => handleCardClick(card)} 
-                                   disabled={!isMyTurn || localLock} // Strict Lock
+                                   disabled={!isMyTurn || localLock} 
+                                   style={style}
                                    className={`
-                                       w-10 h-16 sm:w-16 sm:h-24 md:w-20 md:h-32 bg-white rounded-lg shadow-xl border border-slate-300 relative flex flex-col items-center justify-between p-1 sm:p-2 flex-shrink-0 transition-all duration-200 snap-center
-                                       ${canPlay ? 'hover:-translate-y-4 z-50' : 'z-0 opacity-100'}
-                                       ${isMandatory ? 'ring-2 sm:ring-4 ring-amber-500 animate-bounce' : ''}
+                                       w-12 h-20 sm:w-20 sm:h-32 bg-white rounded-lg shadow-xl border border-slate-300 relative flex flex-col items-center justify-between p-1 flex-shrink-0 transition-transform duration-150
+                                       ${canPlay ? 'hover:-translate-y-4 active:-translate-y-6 z-50' : 'opacity-100' /* NO DIMMING */}
+                                       ${isMandatory ? 'ring-2 ring-amber-500 animate-bounce' : ''}
                                    `}
                                >
                                     <div className="w-full flex justify-between pointer-events-none"><span className={`font-bold text-xs sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
-                                    <div className={`text-lg sm:text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
+                                    <div className={`text-xl sm:text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
                                     <div className="w-full flex justify-between rotate-180 pointer-events-none"><span className={`font-bold text-xs sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
                                </button>
                            )
@@ -656,10 +662,10 @@ export default function Game() {
                </div>
            </div>
        ) : (
-           <div className="h-40 w-full flex flex-col items-center justify-center pb-4 text-center text-slate-500 text-sm bg-slate-900/50 backdrop-blur-sm border-t border-slate-700">
-               <Video className="w-6 h-6 mb-2 opacity-50 text-emerald-400" />
-               <p className="text-emerald-400 font-bold animate-pulse">Spectating Game...</p>
-               <p className="text-xs text-slate-500">Wait for round to end</p>
+           <div className="h-20 w-full flex items-center justify-center bg-slate-900/80 backdrop-blur-md border-t border-slate-700 absolute bottom-0 z-50">
+               <p className="text-emerald-400 font-bold text-sm flex items-center gap-2 animate-pulse">
+                   <Eye size={16} /> Spectating Mode Active
+               </p>
            </div>
        )}
 
@@ -669,9 +675,9 @@ export default function Game() {
                <div className="text-xs text-amber-500 font-bold mb-2 uppercase text-center">Burnt Cards</div>
                <div className="flex gap-2">
                    {gameData.burntCards.map(c => (
-                       <div key={c.id} className="w-10 h-14 bg-white rounded-md shadow flex flex-col items-center justify-center border border-slate-300">
-                           <span className={`text-sm font-bold ${getSuitStyle(c.suit).replace('text-slate-200', 'text-slate-900')}`}>{c.display}</span>
-                           <span className={`text-lg ${getSuitStyle(c.suit).replace('text-slate-200', 'text-slate-900')}`}>{c.suit}</span>
+                       <div key={c.id} className="w-8 h-12 bg-white rounded-md shadow flex flex-col items-center justify-center border border-slate-300">
+                           <span className={`text-xs font-bold ${getSuitStyle(c.suit).replace('text-slate-200', 'text-slate-900')}`}>{c.display}</span>
+                           <span className={`text-sm ${getSuitStyle(c.suit).replace('text-slate-200', 'text-slate-900')}`}>{c.suit}</span>
                        </div>
                    ))}
                </div>
