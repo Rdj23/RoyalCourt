@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, Trophy, Eye, EyeOff, RotateCcw, ShieldAlert, Crown, Smartphone, Users, Bot, Download, Clock, Video } from 'lucide-react';
+import { User, Trophy, Eye, EyeOff, RotateCcw, ShieldAlert, Crown, Smartphone, Users, Bot, Download, Clock, Video, Menu, X } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, updateDoc, onSnapshot, getDoc } from 'firebase/firestore';
@@ -77,17 +77,15 @@ export default function Game() {
   const [targetPlayers, setTargetPlayers] = useState(4); 
   const [fillWithBots, setFillWithBots] = useState(true);
   
-  // --- LOCK STATE: Prevents spam clicking ---
-  const [hasPlayedThisTurn, setHasPlayedThisTurn] = useState(false);
+  // --- LOCK STATE: STRICT LOCAL LOCK ---
+  // This is reset ONLY when the turn changes in the database
+  const [localLock, setLocalLock] = useState(false);
   
   // Auto Restart Logic
   const [restartTimer, setRestartTimer] = useState(10);
 
   // PWA Install Prompt
   const [deferredPrompt, setDeferredPrompt] = useState(null);
-
-  // Scroll Ref
-  const handContainerRef = useRef(null);
 
   // 1. AUTHENTICATION
   useEffect(() => {
@@ -120,18 +118,22 @@ export default function Game() {
         const data = docSnap.data();
         setGameData(data);
         
-        // Reset local locks when turn changes
         if (data.gameState === 'playing') {
             setRestartTimer(10);
             
-            // If the turn has changed to someone else, UNLOCK my hand for next time
-            // Or if it IS my turn, ensure I haven't played yet (unless local optimistic update already happened)
-            // Actually, simplest is: If data says it's my turn, and I have NO cards in center pile for this round, unlock.
-            const myId = data.players.find(p => p.uid === user.uid)?.id;
-            const playedInPile = data.centerPile.some(p => p.playerId === myId);
-            
-            if (data.currentTurn === myId && !playedInPile) {
-                setHasPlayedThisTurn(false);
+            // --- UNLOCK LOGIC ---
+            // If the turn has changed, release the local lock
+            // We check if the current turn ID from DB matches my ID
+            const myPlayer = data.players.find(p => p.uid === user.uid);
+            if (myPlayer) {
+                // If it IS my turn now, and I have NOT played into the center pile yet, unlock.
+                const haveIPlayed = data.centerPile.some(p => p.playerId === myPlayer.id);
+                if (data.currentTurn === myPlayer.id && !haveIPlayed) {
+                    setLocalLock(false); 
+                } else {
+                    // If it's not my turn OR I have played, keep locked/ensure lock
+                    // (But we only force set true on click to avoid UI jitter, so we just don't set false here)
+                }
             }
         }
       } else {
@@ -167,7 +169,7 @@ export default function Game() {
     if (!hasAlreadyPlayed && currentPlayer && currentPlayer.isBot && currentPlayer.status === 'playing') {
         const timer = setTimeout(() => {
             runBotMove(currentPlayer);
-        }, 2500);
+        }, 2000);
         return () => clearTimeout(timer);
     }
   }, [gameData, user]);
@@ -221,11 +223,6 @@ export default function Game() {
   // --- GAME ACTIONS ---
 
   const submitMove = async (playerId, card) => {
-    // LOCK IMMEDIATELY
-    if (playerId === gameData.players.find(p => p.uid === user.uid)?.id) {
-        setHasPlayedThisTurn(true);
-    }
-
     const gameRef = doc(db, 'games', roomCode);
     let newPlayers = [...gameData.players];
     let tempPile = [...gameData.centerPile, { playerId, card }];
@@ -240,7 +237,6 @@ export default function Game() {
     let newLeadSuit = currentLeadSuit;
     if (tempPile.length === 1) newLeadSuit = card.suit;
 
-    // STEP 1: Show card on table (Visual update)
     await updateDoc(gameRef, {
         players: newPlayers,
         centerPile: tempPile,
@@ -253,11 +249,12 @@ export default function Game() {
     const isTrickComplete = tempPile.length >= activeCount + (newPlayers[playerIndex].status === 'safe' ? 1 : 0);
 
     if (isDifferentSuit || isTrickComplete) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await new Promise(resolve => setTimeout(resolve, 2500));
         
         let updates = {};
         
         if (isDifferentSuit) {
+            // CUT LOGIC
             let highestRank = -1;
             let victimId = -1;
             tempPile.forEach(play => {
@@ -289,6 +286,7 @@ export default function Game() {
             }
         } 
         else if (isTrickComplete) {
+            // CLEAR LOGIC
             let highestRank = -1;
             let winnerId = -1;
             tempPile.forEach(play => {
@@ -462,8 +460,8 @@ export default function Game() {
   };
 
   const handleCardClick = (card) => {
-    // 1. Strict Click Lock
-    if (hasPlayedThisTurn) return; 
+    // LOCK LOCAL IMMEDIATELY
+    if (localLock) return;
     
     if (!gameData || gameData.gameState !== 'playing') return;
     const myPlayer = gameData.players.find(p => p.uid === user.uid);
@@ -474,6 +472,9 @@ export default function Game() {
         const hasSuit = myPlayer.hand.some(c => c.suit === gameData.leadSuit);
         if (hasSuit && card.suit !== gameData.leadSuit) return alert("Must follow suit!");
     }
+    
+    // SET LOCK
+    setLocalLock(true);
     submitMove(myPlayer.id, card);
   };
 
@@ -482,22 +483,7 @@ export default function Game() {
 
   // VICTORY SCREEN
   const myPlayer = gameData?.players?.find(p => p.uid === user?.uid);
-  if (gameData?.gameState === 'playing' && myPlayer?.status === 'safe') {
-      return (
-          <div className="h-screen bg-slate-900 flex flex-col items-center justify-center text-white p-6 text-center">
-              <Trophy className="w-32 h-32 text-amber-400 mb-6 animate-bounce" />
-              <h1 className="text-5xl font-serif font-bold text-transparent bg-clip-text bg-gradient-to-r from-amber-300 to-yellow-500 mb-2">YOU ARE SAFE!</h1>
-              <div className="mt-8 p-4 bg-slate-800 rounded-xl border border-slate-700 animate-pulse">
-                  <div className="flex items-center gap-3 text-slate-400 text-sm mb-2">
-                      <Eye className="w-4 h-4" />
-                      Watching Game...
-                  </div>
-                  <div className="text-xs text-slate-500">Wait for next round</div>
-              </div>
-              <div className="fixed bottom-2 w-full text-center text-slate-700 text-[10px] font-sans">Royal Court © Rohan Jadhav</div>
-          </div>
-      );
-  }
+  const isSpectating = gameData?.gameState === 'playing' && myPlayer?.status === 'safe';
 
   // GAME OVER
   if (gameData?.gameState === 'finished') {
@@ -587,15 +573,13 @@ export default function Game() {
       return 'hidden';
   };
 
-  const amISafe = myPlayer.status === 'safe';
-
   return (
     <div className="fixed inset-0 bg-[#0f172a] flex flex-col text-slate-200 font-sans overflow-hidden select-none">
        {/* HEADER */}
        <div className="h-12 bg-slate-950/80 backdrop-blur border-b border-slate-700 flex items-center justify-between px-4 z-30">
           <div className="flex items-center gap-2">
               <span className="font-mono bg-slate-800 px-2 py-1 rounded text-amber-400 text-xs tracking-widest border border-slate-600">{roomCode}</span>
-              {amISafe && <span className="bg-emerald-500 text-slate-900 text-[10px] font-bold px-2 py-0.5 rounded animate-pulse">SPECTATOR</span>}
+              {isSpectating && <span className="bg-emerald-500 text-slate-900 text-[10px] font-bold px-2 py-0.5 rounded animate-pulse">SPECTATOR</span>}
           </div>
           {gameData.players.length === 5 && <button onClick={() => setShowBurnt(!showBurnt)} className="flex items-center gap-1 bg-slate-800 px-3 py-1 rounded-full text-[10px] font-bold uppercase">{showBurnt ? <Eye size={12}/> : <EyeOff size={12}/>} Burnt</button>}
        </div>
@@ -636,7 +620,7 @@ export default function Game() {
        </div>
 
        {/* PLAYER HAND - HORIZONTAL SCROLL ENABLED (MOBILE FIX) */}
-       {!amISafe ? (
+       {!isSpectating ? (
            <div className="h-40 w-full flex flex-col items-center justify-end pb-2 relative z-20">
                <div className={`text-[10px] font-bold uppercase tracking-widest mb-1 px-4 py-1 rounded-full ${isMyTurn ? 'bg-amber-500/20 text-amber-400 animate-pulse border border-amber-500/50' : 'bg-slate-800/50 text-slate-500'}`}>{isMyTurn ? "Your Turn" : "Wait..."}</div>
                
@@ -655,15 +639,15 @@ export default function Game() {
                                <button 
                                    key={card.id} 
                                    onClick={() => handleCardClick(card)} 
-                                   disabled={!isMyTurn || hasPlayedThisTurn} // Strict Lock
+                                   disabled={!isMyTurn || localLock} // Strict Lock
                                    className={`
-                                       w-12 h-20 sm:w-20 sm:h-32 md:w-24 md:h-36 bg-white rounded-xl shadow-2xl border relative flex flex-col items-center justify-between p-1 sm:p-2 flex-shrink-0 transition-transform duration-200 snap-center
+                                       w-10 h-16 sm:w-16 sm:h-24 md:w-20 md:h-32 bg-white rounded-lg shadow-xl border border-slate-300 relative flex flex-col items-center justify-between p-1 sm:p-2 flex-shrink-0 transition-all duration-200 snap-center
                                        ${canPlay ? 'hover:-translate-y-4 z-50' : 'z-0 opacity-100'}
-                                       ${isMandatory ? 'ring-4 ring-amber-500 animate-bounce' : ''}
+                                       ${isMandatory ? 'ring-2 sm:ring-4 ring-amber-500 animate-bounce' : ''}
                                    `}
                                >
                                     <div className="w-full flex justify-between pointer-events-none"><span className={`font-bold text-xs sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
-                                    <div className={`text-xl sm:text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
+                                    <div className={`text-lg sm:text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
                                     <div className="w-full flex justify-between rotate-180 pointer-events-none"><span className={`font-bold text-xs sm:text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
                                </button>
                            )
@@ -672,9 +656,10 @@ export default function Game() {
                </div>
            </div>
        ) : (
-           <div className="h-40 w-full flex flex-col items-center justify-center pb-4 text-center text-slate-500 text-sm">
-               <Video className="w-6 h-6 mb-2 opacity-50" />
-               <p>Spectating Game...</p>
+           <div className="h-40 w-full flex flex-col items-center justify-center pb-4 text-center text-slate-500 text-sm bg-slate-900/50 backdrop-blur-sm border-t border-slate-700">
+               <Video className="w-6 h-6 mb-2 opacity-50 text-emerald-400" />
+               <p className="text-emerald-400 font-bold animate-pulse">Spectating Game...</p>
+               <p className="text-xs text-slate-500">Wait for round to end</p>
            </div>
        )}
 
