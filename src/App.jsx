@@ -74,6 +74,9 @@ export default function Game() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
   
+  // --- FIXED: ADDED MISSING STATE ---
+  const [showBurnt, setShowBurnt] = useState(false);
+
   // Lobby Options
   const [targetPlayers, setTargetPlayers] = useState(4); 
   const [fillWithBots, setFillWithBots] = useState(true);
