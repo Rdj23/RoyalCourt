@@ -40,7 +40,7 @@ const playSound = (type) => {
   
   if (text) {
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.2;
+    u.rate = 1.1; // Slightly slower speech
     u.volume = 0.6;
     synth.speak(u);
   }
@@ -127,10 +127,16 @@ export default function Game() {
     if (gameData.hostId !== user.uid) return; 
 
     const currentPlayer = gameData.players[gameData.currentTurn];
-    if (currentPlayer && currentPlayer.isBot && currentPlayer.status === 'playing') {
+    
+    // FIX: Check if this player has ALREADY played in the current pile
+    // This prevents the bot from spamming moves while waiting for a Cut to resolve
+    const hasAlreadyPlayed = gameData.centerPile.some(p => p.playerId === gameData.currentTurn);
+
+    if (!hasAlreadyPlayed && currentPlayer && currentPlayer.isBot && currentPlayer.status === 'playing') {
+        // Slowed down bot reaction time to 2.5 seconds
         const timer = setTimeout(() => {
             runBotMove(currentPlayer);
-        }, 1500);
+        }, 2500);
         return () => clearTimeout(timer);
     }
   }, [gameData, user]);
@@ -222,8 +228,8 @@ export default function Game() {
     const isTrickComplete = tempPile.length >= activeCount + (newPlayers[playerIndex].status === 'safe' ? 1 : 0);
 
     if (isDifferentSuit || isTrickComplete) {
-        // Wait 2 seconds for users to see the cut/clear
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Wait 3 seconds (Slowed down from 2s) for users to see the cut/clear
+        await new Promise(resolve => setTimeout(resolve, 3000));
         
         // NOW CALCULATE RESULT
         let updates = {};
@@ -314,7 +320,10 @@ export default function Game() {
         }
         
     } else {
-        // STANDARD NEXT TURN (No delay needed usually, but small one is nice)
+        // STANDARD NEXT TURN
+        // Small 1s delay for pacing
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
         let nextIndex = (gameData.currentTurn + 1) % newPlayers.length;
         let safetyLoop = 0;
         while (newPlayers[nextIndex].status === 'safe' && safetyLoop < newPlayers.length) {
@@ -584,7 +593,7 @@ export default function Game() {
                        const canPlay = isMyTurn && (!gameData.mandatoryCard || isMandatory) && (gameData.centerPile.length === 0 || card.suit === gameData.leadSuit || !myPlayer.hand.some(c => c.suit === gameData.leadSuit));
 
                        return (
-                           <button key={card.id} onClick={() => handleCardClick(card)} disabled={!isMyTurn} style={style} className={`w-24 h-36 bg-white rounded-xl shadow-2xl border relative flex flex-col items-center justify-between p-2 flex-shrink-0 transition-all duration-200 origin-bottom ${canPlay ? 'hover:-translate-y-6 hover:scale-110 cursor-pointer border-slate-300 z-50' : 'translate-y-6 border-slate-400 cursor-not-allowed scale-90 opacity-100'} ${isMandatory ? 'ring-4 ring-amber-500 animate-bounce' : ''}`}>
+                           <button key={card.id} onClick={() => handleCardClick(card)} disabled={!isMyTurn} style={style} className={`w-24 h-36 bg-white rounded-xl shadow-2xl border relative flex flex-col items-center justify-between p-2 flex-shrink-0 transition-all duration-200 origin-bottom ${canPlay ? 'hover:-translate-y-6 hover:scale-110 cursor-pointer border-slate-300 z-50' : 'border-slate-300 opacity-100' /* REMOVED DIMMING */ } ${isMandatory ? 'ring-4 ring-amber-500 animate-bounce' : ''}`}>
                                 <div className="w-full flex justify-between pointer-events-none"><span className={`font-bold text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
                                 <div className={`text-4xl ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.suit}</div>
                                 <div className="w-full flex justify-between rotate-180 pointer-events-none"><span className={`font-bold text-lg ${getSuitStyle(card.suit).replace('text-slate-200', 'text-slate-900')}`}>{card.display}</span></div>
