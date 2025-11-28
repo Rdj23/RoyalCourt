@@ -27,7 +27,7 @@ const RANK_VALUE = { '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9'
 
 // --- HELPERS ---
 const generateRoomCode = () => Math.random().toString(36).substring(2, 6).toUpperCase();
-const getSuitStyle = (suit) => (suit === '♥️' || suit === '♦️') ? 'text-rose-600' : 'text-slate-900';
+const getSuitStyle = (suit) => (suit === '♥️' || suit === '♦️') ? 'text-rose-500' : 'text-slate-200';
 
 const playSound = (type) => {
   if (!window.speechSynthesis) return;
@@ -184,6 +184,7 @@ export default function Game() {
     }
 
     if (gameData.centerPile.length === 0) {
+      // LEADING
       const suitsInHand = {};
       bot.hand.forEach(c => {
           if(!suitsInHand[c.suit]) suitsInHand[c.suit] = [];
@@ -192,6 +193,7 @@ export default function Game() {
       
       const avoidList = gameData.avoidSuits || [];
       let validSuits = Object.keys(suitsInHand).filter(s => !avoidList.includes(s));
+      // If we have to play a suit we want to avoid (because it's all we have), then we must play it.
       if (validSuits.length === 0) validSuits = Object.keys(suitsInHand);
 
       if (validSuits.length > 0) {
@@ -200,9 +202,11 @@ export default function Game() {
           const playHigh = Math.random() > 0.4;
           cardToPlay = playHigh ? cardsOfSuit[0] : cardsOfSuit[cardsOfSuit.length - 1];
       } else {
+          // Should not happen if hand not empty
           cardToPlay = bot.hand[0];
       }
     } else {
+      // FOLLOWING
       const hasSuit = bot.hand.filter(c => c.suit === gameData.leadSuit);
       if (hasSuit.length > 0) {
         cardToPlay = hasSuit[0]; 
@@ -555,21 +559,33 @@ export default function Game() {
   const isMyTurn = gameData.currentTurn === myPlayer.id;
   const getRelativeIndex = (theirIndex) => (theirIndex - myPlayer.id + gameData.players.length) % gameData.players.length;
   
-  // --- BALANCED SEATING (BETTER POSITIONING) ---
+  // --- SYMMETRICAL SEATING ENGINE (FIXED) ---
   const getSeatPosition = (relIdx) => {
       const count = gameData.players.length;
-      if (count === 4) {
-          if (relIdx === 1) return 'left-[3%] top-1/2 -translate-y-[80%]'; // Left
-          if (relIdx === 2) return 'top-[10%] left-1/2 -translate-x-1/2';  // Top Center
-          if (relIdx === 3) return 'right-[3%] top-1/2 -translate-y-[80%]'; // Right
-      } 
+      
+      // 2 Players: 1 (Top Center)
+      if (count === 2) {
+          if (relIdx === 1) return 'top-[12%] left-1/2 -translate-x-1/2';
+      }
+      // 3 Players: 1 (Top Left), 2 (Top Right)
+      else if (count === 3) {
+          if (relIdx === 1) return 'top-[15%] left-[20%] -translate-x-1/2';
+          if (relIdx === 2) return 'top-[15%] right-[20%] translate-x-1/2';
+      }
+      // 4 Players: 1 (Left), 2 (Top), 3 (Right)
+      else if (count === 4) {
+          if (relIdx === 1) return 'left-[5%] top-1/2 -translate-y-1/2';
+          if (relIdx === 2) return 'top-[10%] left-1/2 -translate-x-1/2';
+          if (relIdx === 3) return 'right-[5%] top-1/2 -translate-y-1/2';
+      }
+      // 5 Players: 1 (Left), 2 (Top Left), 3 (Top Right), 4 (Right)
       else if (count === 5) {
           if (relIdx === 1) return 'left-[3%] top-1/2 -translate-y-[60%]';
-          if (relIdx === 2) return 'top-[10%] left-[30%] -translate-x-1/2'; // Moved closer to center
-          if (relIdx === 3) return 'top-[10%] right-[30%] translate-x-1/2'; // Moved closer to center
+          if (relIdx === 2) return 'top-[10%] left-[25%] -translate-x-1/2';
+          if (relIdx === 3) return 'top-[10%] right-[25%] translate-x-1/2';
           if (relIdx === 4) return 'right-[3%] top-1/2 -translate-y-[60%]';
       }
-      return 'hidden';
+      return 'hidden'; 
   };
 
   const amISafe = myPlayer.status === 'safe';
@@ -606,7 +622,7 @@ export default function Game() {
            })}
 
            {/* TABLE */}
-           <div className="absolute top-[55%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-32 flex items-center justify-center">
+           <div className="absolute top-[50%] left-1/2 -translate-x-1/2 -translate-y-1/2 w-48 h-32 flex items-center justify-center">
                 <div className="relative w-full h-full flex items-center justify-center">
                     {gameData.centerPile.length === 0 && <div className="border-2 border-dashed border-slate-700/50 rounded-xl w-12 h-20 sm:w-14 sm:h-24 flex items-center justify-center"><span className="text-[9px] text-slate-600 font-bold uppercase">Empty</span></div>}
                     {gameData.centerPile.map((play, i) => (
