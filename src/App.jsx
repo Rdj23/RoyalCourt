@@ -170,11 +170,12 @@ export default function Game() {
   }, [gameData, user]);
 
 
-  // --- SMART BOT BRAIN ---
+  // --- ADVANCED BOT BRAIN ---
   const runBotMove = (bot) => {
     if (!gameData) return;
     let cardToPlay = null;
 
+    // 1. Mandatory Play Check
     if (gameData.mandatoryCard) {
         cardToPlay = bot.hand.find(c => c.id === gameData.mandatoryCard.id);
         if (cardToPlay) {
@@ -183,62 +184,78 @@ export default function Game() {
         }
     }
 
+    const suitsInHand = {};
+    bot.hand.forEach(c => {
+        if(!suitsInHand[c.suit]) suitsInHand[c.suit] = [];
+        suitsInHand[c.suit].push(c);
+    });
+
     if (gameData.centerPile.length === 0) {
-      // LEADING
-      const suitsInHand = {};
-      bot.hand.forEach(c => {
-          if(!suitsInHand[c.suit]) suitsInHand[c.suit] = [];
-          suitsInHand[c.suit].push(c);
-      });
+      // --- LEADING STRATEGY ---
+      // Goal: Play High Safe Cards OR Low Risky Cards
       
       const avoidList = gameData.avoidSuits || [];
-      const validSuits = Object.keys(suitsInHand).filter(s => !avoidList.includes(s));
-      
-      // Smart Choice: If possible, play a suit that hasn't been cut yet.
-      // If ALL suits are risky, then play the one with lowest cards.
-      let chosenSuit = null;
+      const safeSuits = Object.keys(suitsInHand).filter(s => !avoidList.includes(s));
+      const riskySuits = Object.keys(suitsInHand).filter(s => avoidList.includes(s));
 
-      if (validSuits.length > 0) {
-          chosenSuit = validSuits[Math.floor(Math.random() * validSuits.length)];
-          // Play HIGH card to clear it
-          const cardsOfSuit = suitsInHand[chosenSuit];
-          cardToPlay = cardsOfSuit[0]; 
+      if (safeSuits.length > 0) {
+          // We have safe suits. Lead the HIGHEST card of a safe suit (Clear it!)
+          // Pick the safe suit with the highest card
+          let bestCard = null;
+          safeSuits.forEach(s => {
+              const highest = suitsInHand[s][0]; // 0 is highest due to sort
+              if (!bestCard || highest.rank > bestCard.rank) bestCard = highest;
+          });
+          cardToPlay = bestCard;
       } else {
-          // Forced to play risky suit. Play LOWEST card to save high ones.
-          const riskySuit = Object.keys(suitsInHand)[0];
-          const cardsOfSuit = suitsInHand[riskySuit];
-          cardToPlay = cardsOfSuit[cardsOfSuit.length - 1]; 
+          // Only risky suits left. Lead the LOWEST card (Minimize loss)
+          // Pick the risky suit we have the most of, or random
+          const chosenSuit = riskySuits[0]; // Just pick first available
+          const cards = suitsInHand[chosenSuit];
+          cardToPlay = cards[cards.length - 1]; // Lowest
       }
 
     } else {
-      // FOLLOWING
-      const followCards = bot.hand.filter(c => c.suit === gameData.leadSuit);
+      // --- FOLLOWING / CUTTING STRATEGY ---
+      const hasSuit = bot.hand.filter(c => c.suit === gameData.leadSuit);
       
-      if (followCards.length > 0) {
+      if (hasSuit.length > 0) {
+          // --- FOLLOW ---
           const isCut = gameData.centerPile.some(p => p.card.suit !== gameData.leadSuit);
           
           if (isCut) {
-              // Table is cut. We lose this trick. Play LOWEST card.
-              cardToPlay = followCards[followCards.length - 1];
+              // Table is cut. We lose. DUMP LOWEST.
+              cardToPlay = hasSuit[hasSuit.length - 1];
           } else {
-              // Try to win?
+              // Not cut. Try to win.
               let highestRankOnTable = -1;
               gameData.centerPile.forEach(p => {
                   if (p.card.rank > highestRankOnTable) highestRankOnTable = p.card.rank;
               });
               
-              if (followCards[0].rank > highestRankOnTable) {
-                  // Win and Clear
-                  cardToPlay = followCards[0];
+              if (hasSuit[0].rank > highestRankOnTable) {
+                  // I can win. Play HIGHEST to clear.
+                  cardToPlay = hasSuit[0];
               } else {
-                  // Can't win. Save high cards. Play LOWEST.
-                  cardToPlay = followCards[followCards.length - 1];
+                  // I can't beat the table. DUMP LOWEST.
+                  cardToPlay = hasSuit[hasSuit.length - 1];
               }
           }
       } else {
-          // CUTTING
-          // Play lowest junk card of another suit
-          cardToPlay = bot.hand[bot.hand.length - 1]; 
+          // --- CUTTING (DUMPING) ---
+          // Priority: Dump High Cards (Face Cards) of other suits to save them from being trapped.
+          // Or dump "Lonely" cards (singles).
+          
+          // Find highest card in hand across all suits
+          let highestDump = bot.hand[0]; 
+          // Refine: Prefer dumping from a suit we have FEW of (to void it)
+          // Or dumping a high card we fear losing.
+          
+          // Simple "Smart" Logic: Dump the highest card available to hurt the picker? 
+          // OR Dump the highest card to safe-guard yourself?
+          // You said: "He gave me 2... he should have given Q". So Bot should DUMP HIGH.
+          
+          cardToPlay = bot.hand[0]; // This is the highest card in hand (sorted)
       }
     }
     
@@ -591,7 +608,7 @@ export default function Game() {
   const isMyTurn = gameData.currentTurn === myPlayer.id;
   const getRelativeIndex = (theirIndex) => (theirIndex - myPlayer.id + gameData.players.length) % gameData.players.length;
   
-  // --- SYMMETRICAL SEATING ENGINE ---
+  // --- SYMMETRICAL SEATING ENGINE (FIXED) ---
   const getSeatPosition = (relIdx) => {
       const count = gameData.players.length;
       
